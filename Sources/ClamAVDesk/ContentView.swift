@@ -1,3 +1,4 @@
+import AppKit
 import Charts
 import SwiftUI
 
@@ -12,6 +13,7 @@ struct ContentView: View {
                 Label("Scan", systemImage: "shield.checkered").tag(1)
                 Label("Results", systemImage: "doc.text.magnifyingglass").tag(2)
                 Label("Updates", systemImage: "arrow.triangle.2.circlepath").tag(3)
+                Label("About & Licenses", systemImage: "info.circle").tag(4)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
@@ -20,6 +22,7 @@ struct ContentView: View {
                 case 1: ScanView()
                 case 2: ResultsView()
                 case 3: DefinitionsView()
+                case 4: LicensesView()
                 default: StatusView()
                 }
             }
@@ -32,6 +35,73 @@ struct ContentView: View {
             FullDiskAccessView()
                 .environment(controller)
         }
+    }
+}
+
+private struct LicensesView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 14) {
+                    if let image = NSImage(named: "AuraProtectIcon") ?? bundledIcon {
+                        Image(nsImage: image).resizable().frame(width: 72, height: 72)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Aura Protect").font(.largeTitle.bold())
+                        Text("Open-source malware scanning for macOS")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                GroupBox("Aura Protect license") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Copyright © 2026 Tony Simek and Aura Protect contributors.")
+                        Text("Aura Protect is free and open-source software distributed under the GNU General Public License, version 2 only (GPL-2.0-only). It comes with no warranty.")
+                        HStack {
+                            Link("View source code", destination: URL(string: "https://github.com/TonyPHX/aura-protect")!)
+                            Button("Read full license") { openResource("AuraProtect-License", extension: "txt") }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }
+
+                GroupBox("ClamAV attribution") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Aura Protect is powered by ClamAV, the open-source antivirus engine created and maintained by the ClamAV Team and Cisco Systems, Inc.")
+                        Text("The bundled ClamAV 1.5.3 runtime is distributed under the GNU General Public License, version 2. Its corresponding source code and third-party license notices are available below and are also included with this application.")
+                        HStack {
+                            Link("ClamAV project", destination: URL(string: "https://www.clamav.net")!)
+                            Link("ClamAV 1.5.3 source", destination: URL(string: "https://github.com/Cisco-Talos/clamav/tree/clamav-1.5.3")!)
+                            Button("Read ClamAV license") { openResource("ClamAV-License", extension: "txt") }
+                        }
+                        Text("Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }
+
+                GroupBox("Third-party components") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("ClamAV includes components maintained by other open-source projects. Their notices are preserved in the application bundle and in the Aura Protect source repository.")
+                        Button("Show bundled license notices") { revealLicenseFolder() }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var bundledIcon: NSImage? {
+        Bundle.main.url(forResource: "AuraProtectIcon", withExtension: "png").flatMap(NSImage.init(contentsOf:))
+    }
+
+    private func openResource(_ name: String, extension fileExtension: String) {
+        if let url = Bundle.main.url(forResource: name, withExtension: fileExtension) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func revealLicenseFolder() {
+        guard let resources = Bundle.main.resourceURL else { return }
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: resources.appendingPathComponent("ClamAV/licenses").path)
     }
 }
 

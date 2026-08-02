@@ -18,3 +18,11 @@ The bundled runtime is ClamAV 1.5.3 from the official Cisco-Talos release. Its s
 ## Safety
 
 Detected files are reported but never automatically deleted or moved. Review detections before taking action; false positives are possible.
+
+## Open source and attribution
+
+Aura Protect is free and open-source software licensed under the [GNU General Public License, version 2 only](LICENSE). Copyright © 2026 Tony Simek and Aura Protect contributors.
+
+Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained by the ClamAV Team and Cisco Systems, Inc. The bundled ClamAV 1.5.3 runtime is licensed under GPLv2; its corresponding [source code](https://github.com/Cisco-Talos/clamav/tree/clamav-1.5.3), license, and official third-party notices are identified in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and `Vendor/ClamAV/licenses`.
+
+Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
