@@ -1,8 +1,16 @@
+import AppKit
 import SwiftUI
 
 @main
 struct ClamAVDeskApp: App {
     @State private var controller = ScanController()
+
+    init() {
+        if let url = Bundle.main.url(forResource: "AuraProtectIcon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            NSApplication.shared.applicationIconImage = image
+        }
+    }
 
     var body: some Scene {
         WindowGroup {

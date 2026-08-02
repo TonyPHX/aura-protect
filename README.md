@@ -2,6 +2,8 @@
 
 A fast native macOS ClamAV front end. The official universal ClamAV runtime is bundled; Homebrew is not required.
 
+The Aura Protect artwork in `Assets` is packaged as the application, Finder, and Dock icon.
+
 ## Build
 
 ```sh
