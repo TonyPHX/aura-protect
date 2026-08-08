@@ -362,7 +362,7 @@ final class ScanController {
     }
 
     func exportReport() {
-        guard state == .finished || state == .failed else { return }
+        guard state.hasResults else { return }
         let panel = NSSavePanel()
         panel.title = "Save Scan Report"
         panel.nameFieldStringValue = "Aura Protect Scan Report.txt"
@@ -413,7 +413,7 @@ final class ScanController {
     }
 
     func quarantineDetectedFiles() {
-        guard state == .finished || state == .failed, !unquarantinedDetections.isEmpty else { return }
+        guard state.hasResults, !unquarantinedDetections.isEmpty else { return }
         let manager = FileManager.default
         let directory = Self.quarantineDirectory
         do {
@@ -788,8 +788,12 @@ final class ScanController {
                         skippedFiles: skippedFileCount, reusedFiles: reusedFileCount, duration: elapsed)
         scanCompletedAt = Date()
         progress = 1
-        state = exitCode <= 1 ? .finished : .failed
-        if exitCode > 1 { appendConcern("ClamAV ended with error code \(exitCode).") }
+        state = ScanState.completionState(exitCode: exitCode, processedFiles: processedFiles)
+        if state == .finishedWithIssues {
+            appendConcern("Scan completed, but ClamAV reported \(summary.errors) error\(summary.errors == 1 ? "" : "s") (exit code \(exitCode)). Review the errors above and the Files not scanned section.")
+        } else if state == .failed {
+            appendConcern("ClamAV could not complete the scan (exit code \(exitCode)). Review the preceding error details.")
+        }
         if log.isEmpty { log = "No concerning detections or scan errors were reported." }
         if settings.bellOnDetection && !detections.isEmpty { NSSound.beep() }
     }

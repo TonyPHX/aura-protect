@@ -1,7 +1,7 @@
 import Foundation
 
 enum ScanState: Equatable {
-    case idle, counting, scanning, cancelling, finished, failed
+    case idle, counting, scanning, cancelling, finished, finishedWithIssues, failed
 
     var label: String {
         switch self {
@@ -10,8 +10,18 @@ enum ScanState: Equatable {
         case .scanning: "Scanning…"
         case .cancelling: "Cancelling…"
         case .finished: "Scan complete"
+        case .finishedWithIssues: "Scan complete with issues"
         case .failed: "Scan failed"
         }
+    }
+
+    var hasResults: Bool {
+        self == .finished || self == .finishedWithIssues || self == .failed
+    }
+
+    static func completionState(exitCode: Int32, processedFiles: Int) -> ScanState {
+        if exitCode <= 1 { return .finished }
+        return processedFiles > 0 ? .finishedWithIssues : .failed
     }
 }
 

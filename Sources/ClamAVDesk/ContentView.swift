@@ -403,6 +403,11 @@ private struct ScanView: View {
                 Label("\(controller.detections.count) threat\(controller.detections.count == 1 ? "" : "s") detected", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red).font(.headline)
             }
+            if controller.state == .finishedWithIssues {
+                Label("The scan completed, but ClamAV reported \(controller.summary.errors) error\(controller.summary.errors == 1 ? "" : "s"). Open Results for the affected paths and details.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
             Spacer()
         }
     }
@@ -424,13 +429,13 @@ private struct ResultsView: View {
             HStack {
                 Text("Scan Results").font(.largeTitle.bold())
                 Spacer()
-                if controller.state == .finished || controller.state == .failed {
+                if controller.state.hasResults {
                     Button { controller.exportReport() } label: {
                         Label("Save Report…", systemImage: "square.and.arrow.down")
                     }
                 }
             }
-            if controller.state == .finished || controller.state == .failed {
+            if controller.state.hasResults {
                 HStack(spacing: 28) {
                     metric("Files scanned", "\(controller.summary.scannedFiles)", .blue)
                     metric("Threats", "\(controller.summary.infectedFiles)", controller.summary.infectedFiles == 0 ? .green : .red)
