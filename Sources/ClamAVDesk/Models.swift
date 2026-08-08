@@ -15,8 +15,10 @@ enum ScanState: Equatable {
     }
 }
 
-struct ScanSettings: Codable, Equatable {
+struct ScanSettings: Codable, Equatable, Sendable {
     var parallelScanning = true
+    var automaticWorkerTuning = true
+    var incrementalScanning = false
     var workerCount = min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
     var recursive = true
     var scanArchives = true
@@ -25,6 +27,23 @@ struct ScanSettings: Codable, Equatable {
     var followSymlinks = false
     var bellOnDetection = false
     var maxFileSizeMB = 100
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        parallelScanning = try values.decodeIfPresent(Bool.self, forKey: .parallelScanning) ?? true
+        automaticWorkerTuning = try values.decodeIfPresent(Bool.self, forKey: .automaticWorkerTuning) ?? true
+        incrementalScanning = try values.decodeIfPresent(Bool.self, forKey: .incrementalScanning) ?? false
+        workerCount = try values.decodeIfPresent(Int.self, forKey: .workerCount) ?? min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
+        recursive = try values.decodeIfPresent(Bool.self, forKey: .recursive) ?? true
+        scanArchives = try values.decodeIfPresent(Bool.self, forKey: .scanArchives) ?? true
+        scanHidden = try values.decodeIfPresent(Bool.self, forKey: .scanHidden) ?? true
+        detectPUA = try values.decodeIfPresent(Bool.self, forKey: .detectPUA) ?? false
+        followSymlinks = try values.decodeIfPresent(Bool.self, forKey: .followSymlinks) ?? false
+        bellOnDetection = try values.decodeIfPresent(Bool.self, forKey: .bellOnDetection) ?? false
+        maxFileSizeMB = try values.decodeIfPresent(Int.self, forKey: .maxFileSizeMB) ?? 100
+    }
 
     static let defaultsKey = "scanSettings"
 
@@ -45,6 +64,8 @@ struct ScanSummary: Equatable {
     var scannedFiles = 0
     var infectedFiles = 0
     var errors = 0
+    var skippedFiles = 0
+    var reusedFiles = 0
     var duration: TimeInterval = 0
 }
 
@@ -75,6 +96,11 @@ struct QuarantineRecord: Codable {
 }
 
 enum OutputParser {
+    static func resultPath(_ line: String) -> String? {
+        guard isFileResult(line), let separator = line.range(of: ": ", options: .backwards)?.lowerBound else { return nil }
+        return String(line[..<separator])
+    }
+
     static func isFileResult(_ line: String) -> Bool {
         guard !line.hasPrefix("-----------"),
               !line.hasPrefix("Known viruses:"),

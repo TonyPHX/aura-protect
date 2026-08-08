@@ -39,6 +39,8 @@ struct ContentView: View {
 }
 
 private struct LicensesView: View {
+    @Environment(ScanController.self) private var controller
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -55,7 +57,7 @@ private struct LicensesView: View {
 
                 GroupBox("Aura Protect license") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Copyright © 2026 Tony Simek and Aura Protect contributors.")
+                        Text(verbatim: copyrightNotice)
                         Text("Aura Protect is free and open-source software distributed under the GNU General Public License, version 2 only (GPL-2.0-only). It comes with no warranty.")
                         HStack {
                             Link("View source code", destination: URL(string: "https://github.com/TonyPHX/aura-protect")!)
@@ -67,11 +69,13 @@ private struct LicensesView: View {
                 GroupBox("ClamAV attribution") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Aura Protect is powered by ClamAV, the open-source antivirus engine created and maintained by the ClamAV Team and Cisco Systems, Inc.")
-                        Text("The bundled ClamAV 1.5.3 runtime is distributed under the GNU General Public License, version 2. Its corresponding source code and third-party license notices are available below and are also included with this application.")
+                        Text(engineAttributionText)
                         HStack {
                             Link("ClamAV project", destination: URL(string: "https://www.clamav.net")!)
-                            Link("ClamAV 1.5.3 source", destination: URL(string: "https://github.com/Cisco-Talos/clamav/tree/clamav-1.5.3")!)
-                            Button("Read ClamAV license") { openResource("ClamAV-License", extension: "txt") }
+                            if let sourceURL = clamAVSourceURL {
+                                Link("ClamAV \(installedEngineVersion) source", destination: sourceURL)
+                            }
+                            Button("Read ClamAV license") { openClamAVLicense() }
                         }
                         Text("Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -93,9 +97,50 @@ private struct LicensesView: View {
         Bundle.main.url(forResource: "AuraProtectIcon", withExtension: "png").flatMap(NSImage.init(contentsOf:))
     }
 
+    private var copyrightYear: Int {
+        max(Calendar.current.component(.year, from: Date()), 2026)
+    }
+
+    private var copyrightNotice: String {
+        "Copyright © \(String(copyrightYear)) Tony Simek and Aura Protect contributors."
+    }
+
+    private var installedEngineVersion: String {
+        EngineUpdater.version(from: controller.clamVersion) ?? "version unavailable"
+    }
+
+    private var engineAttributionText: String {
+        let license = "is distributed under the GNU General Public License, version 2. Its corresponding source code and third-party license notices are available below and are also included with this application."
+        guard let version = EngineUpdater.version(from: controller.clamVersion) else {
+            return "The installed ClamAV engine version is currently unavailable. ClamAV \(license)"
+        }
+        return "The installed ClamAV \(version) runtime \(license)"
+    }
+
+    private var clamAVSourceURL: URL? {
+        guard let version = EngineUpdater.version(from: controller.clamVersion) else { return nil }
+        return URL(string: "https://github.com/Cisco-Talos/clamav/tree/clamav-\(version)")
+    }
+
     private func openResource(_ name: String, extension fileExtension: String) {
         if let url = Bundle.main.url(forResource: name, withExtension: fileExtension) {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func openClamAVLicense() {
+        if let executable = ScanController.findExecutable("clamscan") {
+            let license = executable.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("licenses/ClamAV-License.txt")
+            if FileManager.default.fileExists(atPath: license.path) {
+                NSWorkspace.shared.open(license)
+                return
+            }
+        }
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("ClamAV/licenses/ClamAV-License.txt"),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            NSWorkspace.shared.open(bundled)
         }
     }
 
@@ -407,6 +452,8 @@ private struct ResultsView: View {
                             reportLine("Clean files", cleanFiles.formatted(), .green)
                             reportLine("Concerning detections", controller.summary.infectedFiles.formatted(), .red)
                             reportLine("Scan errors", controller.summary.errors.formatted(), .orange)
+                            reportLine("Skipped by limits or access", controller.summary.skippedFiles.formatted(), .orange)
+                            reportLine("Unchanged files reused", controller.summary.reusedFiles.formatted(), .blue)
                             Divider()
                             reportLine("Average throughput", throughput, .blue)
                             reportLine("Protection signatures",
@@ -448,6 +495,19 @@ private struct ResultsView: View {
                         Text("Nothing is removed automatically. Quarantine only occurs after you confirm it, and files are moved—not deleted—with recovery information saved alongside them.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }.padding(8)
+                }
+            }
+            if !controller.skippedFileDetails.isEmpty {
+                GroupBox("Files not scanned") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("These files were outside the configured size limit or could not be read. The saved report includes the total.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(controller.skippedFileDetails, id: \.self) { Text($0).font(.caption.monospaced()).textSelection(.enabled) }
+                        if controller.summary.skippedFiles > controller.skippedFileDetails.count {
+                            Text("…and \(controller.summary.skippedFiles - controller.skippedFileDetails.count) more")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }.padding(8)
                 }
             }
@@ -508,8 +568,11 @@ private struct DefinitionsView: View {
             Text("Fresh definitions help ClamAV recognize recently discovered threats.").foregroundStyle(.secondary)
             GroupBox {
                 HStack(spacing: 16) {
-                    Image(systemName: controller.isUpdating ? "arrow.triangle.2.circlepath" : "checkmark.shield.fill")
-                        .font(.largeTitle).foregroundStyle(controller.isUpdating ? .blue : .green)
+                    Image(systemName: controller.isUpdating ? "arrow.triangle.2.circlepath" :
+                            (controller.definitionsAreCurrent ? "checkmark.shield.fill" : "xmark.shield.fill"))
+                        .font(.largeTitle)
+                        .foregroundStyle(controller.isUpdating ? Color.blue :
+                            (controller.definitionsAreCurrent ? Color.green : Color.red))
                     VStack(alignment: .leading) {
                         Text(controller.definitionsStatus).font(.headline)
                         Text("Uses the bundled ClamAV updater").foregroundStyle(.secondary)
@@ -519,6 +582,28 @@ private struct DefinitionsView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(controller.isUpdating || controller.isBusy || controller.isUpdatingEngine)
                 }.padding(12)
+            }
+            GroupBox("Definition database") {
+                Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 8) {
+                    GridRow { Text("Daily database version").foregroundStyle(.secondary); Text(controller.definitionDatabaseVersion).font(.headline.monospacedDigit()) }
+                    GridRow { Text("Database release").foregroundStyle(.secondary); Text(controller.definitionRelease) }
+                    GridRow { Text("Last attempt").foregroundStyle(.secondary); Text(formatted(controller.lastDefinitionsAttempt)) }
+                    GridRow { Text("Last successful update").foregroundStyle(.secondary); Text(formatted(controller.lastDefinitionsSuccess)) }
+                    GridRow { Text("Automatic checks").foregroundStyle(.secondary); Text("Every 4 hours while Aura Protect is open") }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }
+            GroupBox("Definition update log") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Recent update milestones, warnings, and errors. Repeated transport chatter is omitted.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(controller.definitionUpdateLog)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(8)
+                    }.frame(minHeight: 120, maxHeight: 220)
+                }
             }
             GroupBox("ClamAV engine") {
                 HStack(spacing: 12) {
@@ -534,7 +619,10 @@ private struct DefinitionsView: View {
             }
             Text("Definitions are stored privately in your user Library. Administrator access is not required.")
                 .font(.caption).foregroundStyle(.secondary)
-            Spacer()
         }
+    }
+
+    private func formatted(_ date: Date?) -> String {
+        date?.formatted(date: .abbreviated, time: .shortened) ?? "Never"
     }
 }

@@ -9,15 +9,22 @@ struct SettingsView: View {
             Section("Scan behavior") {
                 Toggle("Use faster parallel scanning", isOn: $controller.settings.parallelScanning)
                 if controller.settings.parallelScanning {
+                    Toggle("Automatically tune workers for this Mac", isOn: $controller.settings.automaticWorkerTuning)
                     HStack {
                         Text("Parallel workers")
                         Spacer()
                         Stepper("\(controller.settings.workerCount)", value: $controller.settings.workerCount,
                                 in: 2...min(max(ProcessInfo.processInfo.activeProcessorCount, 2), 12))
                     }
-                    Text("Four workers is a good balance for most Macs. More workers use additional CPU and may not improve SSD-limited scans.")
+                    .disabled(controller.settings.automaticWorkerTuning)
+                    Text(controller.settings.automaticWorkerTuning
+                         ? "Aura Protect balances CPU and memory use automatically."
+                         : "More workers use additional CPU and may not improve SSD-limited scans.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Toggle("Reuse unchanged clean files", isOn: $controller.settings.incrementalScanning)
+                Text("Optional incremental mode reuses clean results only while Aura Protect remains open, and resets whenever the engine or definitions change. Turn it off for a fresh full scan.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Scan folders recursively", isOn: $controller.settings.recursive)
                 Toggle("Inspect archives", isOn: $controller.settings.scanArchives)
                 Toggle("Include hidden files", isOn: $controller.settings.scanHidden)

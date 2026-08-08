@@ -23,6 +23,11 @@ final class ScanController {
     var isUpdatingEngine = false
     var engineIsCurrent = false
     var definitionsAreCurrent = false
+    var lastDefinitionsAttempt: Date?
+    var lastDefinitionsSuccess: Date?
+    var definitionDatabaseVersion = "Unknown"
+    var definitionRelease = "Unknown"
+    var definitionUpdateLog = "No definition update has been recorded yet."
     var signatureSnapshot: SignatureSnapshot?
     var previousSignatureSnapshot: SignatureSnapshot?
     var scanCompletedAt: Date?
@@ -33,6 +38,8 @@ final class ScanController {
     var parallelScannerAvailable = false
     var parallelScannerStatus = "Checking parallel scanner…"
     var isCheckingParallelScanner = false
+    var skippedFileDetails: [String] = []
+    private var skippedFileCount = 0
 
     private var scanProcess: Process?
     private var scanProcesses: [Process] = []
@@ -48,17 +55,46 @@ final class ScanController {
     private var parallelOutputBuffers: [ObjectIdentifier: String] = [:]
     private var daemonOutputBuffer = ""
     private var scanErrorCount = 0
+    private var definitionUpdateTimer: Timer?
+    private var definitionRetryTask: Task<Void, Never>?
+    private var definitionRetryCount = 0
+    private var activeDaemonConfig: URL?
+    private var activeDaemonSettings: ScanSettings?
+    private var incrementalCache: [String: FileStamp] = [:]
+    private var incrementalCacheKey = ""
+    private var pendingCache: [String: FileStamp] = [:]
+    private var reusedFileCount = 0
+    private var scanUsesIncrementalCache = false
+
+    private struct FileStamp: Equatable, Sendable {
+        let size: Int64
+        let modified: TimeInterval
+    }
+
+    private struct ScanPreparation: Sendable {
+        let count: Int
+        let fileLists: [URL]
+        let directFiles: [URL]
+        let skipped: [String]
+        let skippedCount: Int
+        let reused: Int
+    }
+
+    private static let lastDefinitionsAttemptKey = "lastDefinitionsAttempt"
+    private static let lastDefinitionsSuccessKey = "lastDefinitionsSuccess"
 
     init() {
         Self.migrateLegacySupportData()
+        loadDefinitionUpdateState()
         loadSignatureSnapshots()
         refreshSignatureSnapshot(recordChange: false)
         checkFullDiskAccess(showHelpWhenMissing: true)
+        scheduleDefinitionUpdates()
         Task {
             await loadVersion()
             checkParallelScannerAvailability()
             await checkForEngineUpdates()
-            updateDefinitions()
+            updateDefinitions(automatic: true)
         }
     }
 
@@ -66,6 +102,13 @@ final class ScanController {
     var dashboardReady: Bool { scannerReady && (!settings.parallelScanning || parallelScannerAvailable) }
     var canScan: Bool { selectedURL != nil && !isBusy && !isUpdatingEngine && scannerReady }
     var isBusy: Bool { [.counting, .scanning, .cancelling].contains(state) }
+
+    private var effectiveWorkerCount: Int {
+        guard settings.automaticWorkerTuning else { return settings.workerCount }
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        let memoryGB = max(Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824), 1)
+        return min(max(min(cores / 2, memoryGB / 2), 2), 8)
+    }
 
     func chooseTarget() {
         let panel = NSOpenPanel()
@@ -118,18 +161,30 @@ final class ScanController {
         resetScan()
         state = .counting
         log = ""
-        let currentSettings = settings
+        var tunedSettings = settings
+        tunedSettings.workerCount = tunedSettings.parallelScanning ? effectiveWorkerCount : 1
+        let currentSettings = tunedSettings
+        let cacheKey = "\(EngineUpdater.version(from: clamVersion) ?? clamVersion)|\(definitionDatabaseVersion)"
+        if incrementalCacheKey != cacheKey {
+            incrementalCache.removeAll(keepingCapacity: false)
+            incrementalCacheKey = cacheKey
+        }
+        let reusableCache = currentSettings.incrementalScanning ? incrementalCache : [:]
+        scanUsesIncrementalCache = currentSettings.incrementalScanning
         scanTask = Task {
-            let preparation = await Task.detached(priority: .userInitiated) { () -> (count: Int, fileLists: [URL], directFiles: [URL]) in
-                if currentSettings.parallelScanning,
-                   let prepared = try? Self.prepareScanFileList(at: target, settings: currentSettings) {
-                    return prepared
-                }
-                return (Self.countFiles(at: target, recursive: currentSettings.recursive,
-                                        includeHidden: currentSettings.scanHidden), [], [])
+            let preparation = await Task.detached(priority: .userInitiated) {
+                try? Self.prepareScanFileList(at: target, settings: currentSettings, cache: reusableCache)
             }.value
             guard !Task.isCancelled else { return }
+            guard let preparation else {
+                fail("Aura Protect could not prepare the file inventory.")
+                return
+            }
             totalFiles = preparation.count
+            skippedFileDetails = preparation.skipped
+            skippedFileCount = preparation.skippedCount
+            reusedFileCount = preparation.reused
+            pendingCache = currentSettings.incrementalScanning ? reusableCache : [:]
             if currentSettings.parallelScanning,
                (!preparation.fileLists.isEmpty || !preparation.directFiles.isEmpty),
                let daemon = Self.findExecutable("clamd"),
@@ -139,7 +194,8 @@ final class ScanController {
                                    directFiles: preparation.directFiles, fallbackScanner: executable,
                                    target: target, settings: currentSettings)
             } else {
-                launchScan(executable: executable, target: target, settings: currentSettings)
+                launchInventoryScan(executable: executable, fileLists: preparation.fileLists,
+                                    directFiles: preparation.directFiles, settings: currentSettings)
             }
         }
     }
@@ -160,18 +216,38 @@ final class ScanController {
         }
     }
 
-    func updateDefinitions() {
-        guard !isUpdating, !isUpdatingEngine, let executable = Self.findExecutable("freshclam") else {
-            definitionsStatus = "Could not find freshclam"
+    func shutdown() {
+        cancelScan()
+        stopWarmDaemon()
+    }
+
+    func updateDefinitions(automatic: Bool = false) {
+        if isUpdating {
+            definitionsStatus = "A definition update is already in progress."
             return
         }
+        if isUpdatingEngine {
+            definitionsStatus = "Waiting for the engine update to finish…"
+            if automatic { scheduleDefinitionRetry() }
+            return
+        }
+        stopWarmDaemon()
+        guard let executable = Self.findExecutable("freshclam") else {
+            definitionsStatus = "Could not find freshclam"
+            recordDefinitionLog("FreshClam executable was not found in the managed, bundled, or supported external engine locations.")
+            return
+        }
+        if !automatic { definitionRetryCount = 0; definitionRetryTask?.cancel() }
         let updaterFiles: (config: URL, database: URL)
         do {
             updaterFiles = try Self.prepareUpdaterFiles()
         } catch {
             definitionsStatus = "Could not prepare the definition folder: \(error.localizedDescription)"
+            recordDefinitionLog(definitionsStatus)
             return
         }
+        lastDefinitionsAttempt = Date()
+        UserDefaults.standard.set(lastDefinitionsAttempt, forKey: Self.lastDefinitionsAttemptKey)
         isUpdating = true
         definitionsAreCurrent = false
         definitionsStatus = "Updating definitions…"
@@ -179,7 +255,7 @@ final class ScanController {
         let pipe = Pipe()
         process.executableURL = executable
         Self.configureEnvironment(for: process, executable: executable)
-        process.arguments = ["--stdout", "--verbose", "--show-progress",
+        process.arguments = ["--stdout",
                              "--config-file=\(updaterFiles.config.path)",
                              "--datadir=\(updaterFiles.database.path)"]
         if let certificates = Self.certificatesDirectory {
@@ -195,12 +271,24 @@ final class ScanController {
                 process.waitUntilExit()
                 let text = String(decoding: data, as: UTF8.self)
                 await MainActor.run {
+                    self?.recordDefinitionLog(text, exitCode: process.terminationStatus)
                     self?.isUpdating = false
                     self?.definitionsAreCurrent = process.terminationStatus == 0
-                    self?.definitionsStatus = process.terminationStatus == 0
-                        ? "Definitions verified \(Date.now.formatted(date: .abbreviated, time: .shortened))"
-                        : Self.friendlyUpdateError(text)
-                    if process.terminationStatus == 0 { self?.refreshSignatureSnapshot(recordChange: true) }
+                    if process.terminationStatus == 0 {
+                        let now = Date()
+                        self?.lastDefinitionsSuccess = now
+                        UserDefaults.standard.set(now, forKey: Self.lastDefinitionsSuccessKey)
+                        self?.definitionsStatus = text.lowercased().contains("up-to-date")
+                            ? "Definitions are already current (checked \(now.formatted(date: .abbreviated, time: .shortened)))"
+                            : "Definitions updated \(now.formatted(date: .abbreviated, time: .shortened))"
+                        self?.definitionRetryCount = 0
+                        self?.definitionRetryTask?.cancel()
+                        self?.refreshDefinitionDatabaseInfo()
+                        self?.refreshSignatureSnapshot(recordChange: true)
+                    } else {
+                        self?.definitionsStatus = Self.friendlyUpdateError(text)
+                        self?.scheduleDefinitionRetry()
+                    }
                     self?.updateProcess = nil
                 }
             } catch {
@@ -208,10 +296,64 @@ final class ScanController {
                     self?.isUpdating = false
                     self?.definitionsAreCurrent = false
                     self?.definitionsStatus = "Update failed: \(error.localizedDescription)"
+                    self?.recordDefinitionLog("FreshClam could not start: \(error.localizedDescription)")
+                    self?.scheduleDefinitionRetry()
                     self?.updateProcess = nil
                 }
             }
         }
+    }
+
+    private func scheduleDefinitionUpdates() {
+        definitionUpdateTimer?.invalidate()
+        definitionUpdateTimer = .scheduledTimer(withTimeInterval: 4 * 60 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateDefinitions(automatic: true) }
+        }
+    }
+
+    private func scheduleDefinitionRetry() {
+        guard definitionRetryCount < 3 else { return }
+        let delays: [Duration] = [.seconds(15 * 60), .seconds(60 * 60), .seconds(4 * 60 * 60)]
+        let delay = delays[definitionRetryCount]
+        definitionRetryCount += 1
+        definitionRetryTask?.cancel()
+        definitionRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.updateDefinitions(automatic: true)
+        }
+    }
+
+    private func loadDefinitionUpdateState() {
+        lastDefinitionsAttempt = UserDefaults.standard.object(forKey: Self.lastDefinitionsAttemptKey) as? Date
+        lastDefinitionsSuccess = UserDefaults.standard.object(forKey: Self.lastDefinitionsSuccessKey) as? Date
+        if let text = try? String(contentsOf: Self.definitionUpdateLogURL, encoding: .utf8), !text.isEmpty {
+            let readable = Self.humanReadableDefinitionLog(text)
+            definitionUpdateLog = String(readable.suffix(80_000))
+            Self.replaceDefinitionLog(definitionUpdateLog)
+        }
+        refreshDefinitionDatabaseInfo()
+    }
+
+    private func refreshDefinitionDatabaseInfo() {
+        guard let info = Self.dailyDefinitionInfo() else {
+            definitionDatabaseVersion = "Unknown"
+            definitionRelease = "Unknown"
+            return
+        }
+        definitionDatabaseVersion = info.version
+        definitionRelease = info.release
+    }
+
+    private func recordDefinitionLog(_ output: String, exitCode: Int32? = nil) {
+        let cleaned = Self.humanReadableDefinitionLog(output)
+        let outcome = exitCode.map { $0 == 0 ? "Update completed successfully" : "Update failed (code \($0))" }
+        let entry = "[\(Date.now.formatted(date: .numeric, time: .standard))] " +
+            (outcome ?? "Update event") + "\n" +
+            (cleaned.isEmpty ? "No additional details were reported." : cleaned) + "\n\n"
+        Self.appendDefinitionLog(entry)
+        definitionUpdateLog = String((definitionUpdateLog == "No definition update has been recorded yet."
+            ? entry : definitionUpdateLog + entry).suffix(80_000))
     }
 
     func requestEngineUpdateCheck() {
@@ -245,6 +387,8 @@ final class ScanController {
         Concerning detections: \(summary.infectedFiles.formatted())
         Files quarantined by user: \(quarantinedPaths.count.formatted())
         Scan errors: \(summary.errors.formatted())
+        Files skipped by limits or access: \(summary.skippedFiles.formatted())
+        Unchanged clean files reused: \(summary.reusedFiles.formatted())
         Duration: \(String(format: "%.1f seconds", summary.duration))
         Average throughput: \(throughput)
 
@@ -256,6 +400,9 @@ final class ScanController {
 
         CONCERNING FINDINGS AND ERRORS
         \(concerns)
+
+        FILES NOT SCANNED (first 100)
+        \(skippedFileDetails.isEmpty ? "None" : skippedFileDetails.joined(separator: "\n"))
         """
         do { try report.write(to: url, atomically: true, encoding: .utf8) }
         catch { log = "Could not save report: \(error.localizedDescription)" }
@@ -320,6 +467,7 @@ final class ScanController {
     }
 
     private func checkForEngineUpdates() async {
+        stopWarmDaemon()
         guard let current = EngineUpdater.version(from: clamVersion) else {
             engineUpdateStatus = "Unable to determine the installed engine version."
             return
@@ -381,8 +529,56 @@ final class ScanController {
         }
     }
 
+    private func launchInventoryScan(executable: URL, fileLists: [URL], directFiles: [URL], settings: ScanSettings) {
+        guard let fileList = try? Self.consolidateScanFileLists(fileLists) else {
+            fail("Aura Protect could not prepare the scanner input list.")
+            return
+        }
+        scanFileListURLs.append(fileList)
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = executable
+        Self.configureEnvironment(for: process, executable: executable)
+        var arguments = Self.baseScanArguments(settings: settings, databaseDirectory: Self.databaseDirectory)
+        arguments.append("--file-list=\(fileList.path)")
+        if !directFiles.isEmpty {
+            arguments.append("--")
+            arguments.append(contentsOf: directFiles.map(\.path))
+        }
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        scanProcess = process
+        state = .scanning
+        startTime = Date()
+        timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshTiming() }
+        }
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) }
+        }
+        do { try process.run() }
+        catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
+        Task.detached { [weak self] in
+            process.waitUntilExit()
+            await MainActor.run { self?.finishScan(exitCode: process.terminationStatus) }
+        }
+    }
+
     private func launchParallelScan(daemon: URL, client: URL, fileLists: [URL], directFiles: [URL],
                                     fallbackScanner: URL, target: URL, settings: ScanSettings) {
+        if daemonProcess?.isRunning == true,
+           activeDaemonSettings == settings,
+           let config = activeDaemonConfig {
+            state = .scanning
+            parallelScannerAvailable = true
+            parallelScannerStatus = "Warm parallel scanner ready with up to \(settings.workerCount) workers."
+            launchDaemonClients(executable: client, config: config, fileLists: fileLists, directFiles: directFiles)
+            return
+        }
+        stopWarmDaemon()
         let daemonFiles: (config: URL, socket: URL)
         do {
             daemonFiles = try Self.prepareDaemonFiles(settings: settings)
@@ -423,6 +619,8 @@ final class ScanController {
                     Self.daemonResponds(client: client, config: daemonFiles.config)
                 }.value
                 if ready {
+                    self.activeDaemonConfig = daemonFiles.config
+                    self.activeDaemonSettings = settings
                     self.parallelScannerAvailable = true
                     self.parallelScannerStatus = "Connected and ready with up to \(settings.workerCount) parallel workers."
                     self.launchDaemonClients(executable: client, config: daemonFiles.config,
@@ -430,26 +628,24 @@ final class ScanController {
                     return
                 }
                 if process.isRunning == false {
-                    self.fallbackToSingleScan(executable: fallbackScanner, target: target,
-                                              settings: settings)
+                    self.fallbackToSingleScan(executable: fallbackScanner, fileLists: fileLists,
+                                              directFiles: directFiles, settings: settings)
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
             process.terminate()
-            self?.fallbackToSingleScan(executable: fallbackScanner, target: target, settings: settings)
+            self?.fallbackToSingleScan(executable: fallbackScanner, fileLists: fileLists,
+                                       directFiles: directFiles, settings: settings)
         }
     }
 
-    private func fallbackToSingleScan(executable: URL, target: URL, settings: ScanSettings) {
-        daemonProcess?.terminate()
-        daemonProcess = nil
-        scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
-        scanFileListURLs = []
+    private func fallbackToSingleScan(executable: URL, fileLists: [URL], directFiles: [URL], settings: ScanSettings) {
+        stopWarmDaemon()
         daemonOutputBuffer = ""
         parallelScannerAvailable = false
         parallelScannerStatus = "Parallel workers could not connect. This scan is continuing safely in single-process mode."
-        launchScan(executable: executable, target: target, settings: settings)
+        launchInventoryScan(executable: executable, fileLists: fileLists, directFiles: directFiles, settings: settings)
     }
 
     private func launchDaemonClients(executable: URL, config: URL, fileLists: [URL], directFiles: [URL]) {
@@ -529,6 +725,7 @@ final class ScanController {
         else { outputBuffer = lines.last ?? "" }
         for line in lines.dropLast() where OutputParser.isFileResult(line) {
             processedFiles += 1
+            updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if let path = OutputParser.infectionPath(line), !detections.contains(path) {
                 detections.append(path)
@@ -555,6 +752,7 @@ final class ScanController {
         let remainingLines = [outputBuffer] + Array(parallelOutputBuffers.values)
         for line in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
             processedFiles += 1
+            updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if let path = OutputParser.infectionPath(line), !detections.contains(path) {
                 detections.append(path)
@@ -574,8 +772,9 @@ final class ScanController {
         scanProcess = nil
         scanProcesses = []
         parallelClientsRemaining = 0
-        daemonProcess?.terminate()
-        daemonProcess = nil
+        if daemonProcess?.isRunning == true {
+            parallelScannerStatus = "Warm parallel scanner ready for the next scan."
+        }
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
         scanFileListURLs = []
         if state == .cancelling {
@@ -583,8 +782,10 @@ final class ScanController {
             log += "\nScan cancelled."
             return
         }
+        if scanUsesIncrementalCache && exitCode <= 1 { incrementalCache = pendingCache }
         summary = .init(scannedFiles: processedFiles, infectedFiles: detections.count,
-                        errors: max(scanErrorCount, exitCode > 1 ? 1 : 0), duration: elapsed)
+                        errors: max(scanErrorCount, exitCode > 1 ? 1 : 0),
+                        skippedFiles: skippedFileCount, reusedFiles: reusedFileCount, duration: elapsed)
         scanCompletedAt = Date()
         progress = 1
         state = exitCode <= 1 ? .finished : .failed
@@ -607,11 +808,20 @@ final class ScanController {
         parallelOutputBuffers = [:]
         scanErrorCount = 0
         daemonOutputBuffer = ""
+        skippedFileDetails = []; skippedFileCount = 0; reusedFileCount = 0
+        pendingCache = [:]; scanUsesIncrementalCache = false
     }
 
     private func fail(_ message: String) {
         timer?.invalidate(); timer = nil
         state = .failed; log = message
+    }
+
+    private func stopWarmDaemon() {
+        if daemonProcess?.isRunning == true { daemonProcess?.terminate() }
+        daemonProcess = nil
+        activeDaemonConfig = nil
+        activeDaemonSettings = nil
     }
 
     private func consumeDaemonOutput(_ text: String) {
@@ -626,6 +836,18 @@ final class ScanController {
         if !log.isEmpty { log += "\n" }
         log += line
         if log.count > 100_000 { log.removeFirst(log.count - 80_000) }
+    }
+
+    private func updateIncrementalCache(from line: String) {
+        guard scanUsesIncrementalCache, let path = OutputParser.resultPath(line) else { return }
+        if line.hasSuffix(" FOUND") || line.contains(" ERROR") {
+            pendingCache.removeValue(forKey: path)
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+        pendingCache[path] = FileStamp(size: Int64(values.fileSize ?? 0),
+                                       modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
     }
 
     private func loadSignatureSnapshots() {
@@ -685,12 +907,17 @@ final class ScanController {
     }
 
     nonisolated static func configureEnvironment(for process: Process, executable: URL) {
-        let parent = executable.deletingLastPathComponent()
-        guard ["bin", "sbin"].contains(parent.lastPathComponent) else { return }
-        let library = parent.deletingLastPathComponent().appendingPathComponent("lib", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: library.path) else { return }
         var environment = ProcessInfo.processInfo.environment
-        environment["DYLD_LIBRARY_PATH"] = library.path
+        if let certificates = certificatesDirectory {
+            environment["CVD_CERTS_DIR"] = certificates.path
+        }
+        let parent = executable.deletingLastPathComponent()
+        if ["bin", "sbin"].contains(parent.lastPathComponent) {
+            let library = parent.deletingLastPathComponent().appendingPathComponent("lib", isDirectory: true)
+            if FileManager.default.fileExists(atPath: library.path) {
+                environment["DYLD_LIBRARY_PATH"] = library.path
+            }
+        }
         process.environment = environment
     }
 
@@ -710,18 +937,43 @@ final class ScanController {
     }
 
     nonisolated static func arguments(for target: URL, settings: ScanSettings, databaseDirectory: URL? = nil) -> [String] {
+        var result = baseScanArguments(settings: settings, databaseDirectory: databaseDirectory)
+        if settings.recursive { result.append("--recursive=yes") }
+        result.append("--")
+        result.append(target.path)
+        return result
+    }
+
+    nonisolated static func baseScanArguments(settings: ScanSettings, databaseDirectory: URL? = nil) -> [String] {
         var result = ["--stdout", "--verbose", "--archive=\(settings.scanArchives ? "yes" : "no")",
                       "--max-filesize=\(settings.maxFileSizeMB)M", "--max-scansize=\(settings.maxFileSizeMB * 4)M"]
         if let databaseDirectory { result.append("--database=\(databaseDirectory.path)") }
         if let certificates = certificatesDirectory { result.append("--cvdcertsdir=\(certificates.path)") }
-        if settings.recursive { result.append("--recursive=yes") }
         if settings.detectPUA { result.append("--detect-pua=yes") }
         let follow = settings.followSymlinks ? "1" : "0"
         result += ["--follow-dir-symlinks=\(follow)", "--follow-file-symlinks=\(follow)"]
         if !settings.scanHidden { result.append("--exclude=(^|/)\\.[^/]+") }
-        result.append("--")
-        result.append(target.path)
         return result
+    }
+
+    nonisolated static func consolidateScanFileLists(_ lists: [URL]) throws -> URL {
+        if lists.count == 1 { return lists[0] }
+        let destination = databaseDirectory.deletingLastPathComponent()
+            .appendingPathComponent("scan-files-combined-\(UUID().uuidString).txt")
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        for list in lists {
+            let input = try FileHandle(forReadingFrom: list)
+            defer { try? input.close() }
+            while let data = try input.read(upToCount: 1_048_576), !data.isEmpty {
+                try output.write(contentsOf: data)
+            }
+        }
+        return destination
     }
 
     nonisolated static func countFiles(at url: URL, recursive: Bool, includeHidden: Bool) -> Int {
@@ -742,13 +994,14 @@ final class ScanController {
         return count
     }
 
-    nonisolated static func prepareScanFileList(at target: URL, settings: ScanSettings) throws -> (count: Int, fileLists: [URL], directFiles: [URL]) {
+    nonisolated private static func prepareScanFileList(at target: URL, settings: ScanSettings,
+                                                        cache: [String: FileStamp]) throws -> ScanPreparation {
         let support = databaseDirectory.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) else {
-            return (0, [], [])
+            return ScanPreparation(count: 0, fileLists: [], directFiles: [], skipped: ["Target does not exist: \(target.path)"], skippedCount: 1, reused: 0)
         }
 
         let workerCount = max(settings.workerCount, 1)
@@ -756,8 +1009,12 @@ final class ScanController {
         var handles: [FileHandle] = []
         var buffers = Array(repeating: Data(), count: workerCount)
         var groupCounts = Array(repeating: 0, count: workerCount)
+        var groupBytes = Array(repeating: Int64(0), count: workerCount)
         var regularCount = 0
         var directFiles: [URL] = []
+        var skipped: [String] = []
+        var skippedCount = 0
+        var reused = 0
         var completed = false
         do {
             for _ in 0..<workerCount {
@@ -777,14 +1034,25 @@ final class ScanController {
             if !completed { fileLists.forEach { try? FileManager.default.removeItem(at: $0) } }
         }
 
-        func add(_ url: URL) throws {
+        func add(_ url: URL, size: Int64, modified: TimeInterval) throws {
+            if size > Int64(settings.maxFileSizeMB) * 1_048_576 {
+                skippedCount += 1
+                if skipped.count < 100 { skipped.append("Over size limit: \(url.path)") }
+                return
+            }
+            let stamp = FileStamp(size: size, modified: modified)
+            if cache[url.path] == stamp {
+                reused += 1
+                return
+            }
             if url.path.contains("\n") || url.path.contains("\r") {
                 directFiles.append(url)
                 return
             }
-            let index = regularCount % workerCount
+            let index = groupBytes.indices.min(by: { groupBytes[$0] < groupBytes[$1] }) ?? 0
             buffers[index].append(Data((url.path + "\n").utf8))
             groupCounts[index] += 1
+            groupBytes[index] += max(size, 1)
             regularCount += 1
             if buffers[index].count >= 131_072 {
                 try handles[index].write(contentsOf: buffers[index])
@@ -793,30 +1061,46 @@ final class ScanController {
         }
 
         if !isDirectory.boolValue {
-            try add(target)
+            let values = try target.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            try add(target, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
         } else if !settings.recursive {
             let options: FileManager.DirectoryEnumerationOptions = settings.scanHidden ? [] : [.skipsHiddenFiles]
             let children = try FileManager.default.contentsOfDirectory(at: target,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: options)
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey], options: options)
             for url in children {
-                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]),
                       values.isRegularFile == true,
                       settings.followSymlinks || values.isSymbolicLink != true else { continue }
-                try add(url)
+                guard FileManager.default.isReadableFile(atPath: url.path) else {
+                    skippedCount += 1
+                    if skipped.count < 100 { skipped.append("Unreadable: \(url.path)") }
+                    continue
+                }
+                try add(url, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
             }
         } else {
             var options: FileManager.DirectoryEnumerationOptions = []
             if !settings.scanHidden { options.insert(.skipsHiddenFiles) }
             guard let enumerator = FileManager.default.enumerator(at: target,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: options) else {
-                return (0, [], [])
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey],
+                options: options, errorHandler: { url, error in
+                    skippedCount += 1
+                    if skipped.count < 100 { skipped.append("Could not access \(url.path): \(error.localizedDescription)") }
+                    return true
+                }) else {
+                return ScanPreparation(count: 0, fileLists: [], directFiles: [], skipped: ["Could not enumerate \(target.path)"], skippedCount: 1, reused: 0)
             }
             for case let url as URL in enumerator {
                 if Task.isCancelled { throw CancellationError() }
-                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]),
                       values.isRegularFile == true,
                       settings.followSymlinks || values.isSymbolicLink != true else { continue }
-                try add(url)
+                guard FileManager.default.isReadableFile(atPath: url.path) else {
+                    skippedCount += 1
+                    if skipped.count < 100 { skipped.append("Unreadable: \(url.path)") }
+                    continue
+                }
+                try add(url, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
             }
         }
 
@@ -829,7 +1113,9 @@ final class ScanController {
             else { try? FileManager.default.removeItem(at: fileLists[index]) }
         }
         completed = true
-        return (regularCount + directFiles.count, usedLists, directFiles)
+        return ScanPreparation(count: regularCount + directFiles.count, fileLists: usedLists,
+                               directFiles: directFiles, skipped: skipped,
+                               skippedCount: skippedCount, reused: reused)
     }
 
     nonisolated static func lastUsefulLine(_ text: String) -> String? {
@@ -844,6 +1130,70 @@ final class ScanController {
     nonisolated static var quarantineDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Aura Protect/Quarantine", isDirectory: true)
+    }
+
+    nonisolated static var definitionUpdateLogURL: URL {
+        databaseDirectory.deletingLastPathComponent().appendingPathComponent("definition-update.log")
+    }
+
+    nonisolated static func dailyDefinitionInfo() -> (version: String, release: String)? {
+        let manager = FileManager.default
+        let candidates = ["daily.cvd", "daily.cld", "daily.cud"]
+        guard let name = candidates.first(where: {
+            manager.fileExists(atPath: databaseDirectory.appendingPathComponent($0).path)
+        }), let handle = try? FileHandle(forReadingFrom: databaseDirectory.appendingPathComponent(name)) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 512) else { return nil }
+        let fields = String(decoding: data, as: UTF8.self).split(separator: ":", omittingEmptySubsequences: false)
+        guard fields.count > 2 else { return nil }
+        return (String(fields[2]), String(fields[1]))
+    }
+
+    nonisolated static func appendDefinitionLog(_ entry: String) {
+        let manager = FileManager.default
+        let url = definitionUpdateLogURL
+        try? manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                     attributes: [.posixPermissions: 0o700])
+        var existing = (try? Data(contentsOf: url)) ?? Data()
+        if existing.count > 500_000 { existing = existing.suffix(250_000) }
+        existing.append(Data(entry.utf8))
+        do {
+            try existing.write(to: url, options: .atomic)
+            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch { }
+    }
+
+    nonisolated static func replaceDefinitionLog(_ text: String) {
+        let url = definitionUpdateLogURL
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch { }
+    }
+
+    nonisolated static func humanReadableDefinitionLog(_ output: String) -> String {
+        let ansiPattern = "\\u{001B}\\[[0-9;?]*[ -/]*[@-~]"
+        let withoutANSI = output.replacingOccurrences(of: ansiPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\r", with: "\n")
+        let noisePrefixes = [
+            "current working dir is ", "loaded freshclam.dat:", "version:", "uuid:",
+            "querying current.cvd.clamav.net", "trying to retrieve cvd header", "check_for_new_database_version:",
+            "updatedb: running ", "download_complete_callback:", "fc_context->", "* ", "time:"
+        ]
+        var result: [String] = []
+        var seenRepeatedMessages: Set<String> = []
+        for rawLine in withoutANSI.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let lower = line.lowercased()
+            guard !noisePrefixes.contains(where: lower.hasPrefix),
+                  !line.allSatisfy({ $0 == "=" || $0 == ">" || $0 == "-" || $0.isNumber || $0 == "." || $0 == "%" || $0 == " " }) else { continue }
+            let repeatable = lower.hasPrefix("warning:") || lower.hasPrefix("error:") ||
+                lower.hasPrefix("failed") || lower.contains("could not resolve")
+            if repeatable && !seenRepeatedMessages.insert(line).inserted { continue }
+            result.append(line)
+        }
+        return result.suffix(200).joined(separator: "\n")
     }
 
     nonisolated static func migrateLegacySupportData() {
@@ -908,7 +1258,7 @@ final class ScanController {
         DatabaseDirectory \(database.path)
         DatabaseMirror database.clamav.net
         DatabaseOwner \(NSUserName())
-        Checks 12
+        \(certificatesDirectory.map { "CVDCertsDirectory \($0.path)" } ?? "")
         ConnectTimeout 30
         ReceiveTimeout 120
         TestDatabases yes
@@ -933,6 +1283,7 @@ final class ScanController {
             "FixStaleSocket yes",
             "LocalSocketMode 600",
             "DatabaseDirectory \(database.path)",
+            certificatesDirectory.map { "CVDCertsDirectory \($0.path)" } ?? "",
             "Foreground yes",
             "MaxThreads \(settings.workerCount)",
             "MaxQueue \(max(settings.workerCount * 20, 100))",
@@ -970,6 +1321,9 @@ final class ScanController {
 
     nonisolated static func friendlyUpdateError(_ text: String) -> String {
         let lower = text.lowercased()
+        if lower.contains("invalid certs directory") || lower.contains("code-signature verifier") {
+            return "ClamAV could not verify the downloaded database signature. Check the update log for the certificate path."
+        }
         if lower.contains("permission denied") { return "Definition folder is not writable. Check its permissions and try again." }
         if lower.contains("rate limit") || lower.contains("429") { return "The update server is rate-limiting requests. Please try again later." }
         if lower.contains("network") || lower.contains("resolve host") || lower.contains("connection") { return "Could not reach the ClamAV update server. Check your internet connection." }
