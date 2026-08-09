@@ -425,6 +425,7 @@ private struct ScanView: View {
 private struct ResultsView: View {
     @Environment(ScanController.self) private var controller
     @State private var showQuarantineConfirmation = false
+    @State private var pendingQuarantinePaths: [String] = []
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -484,10 +485,12 @@ private struct ResultsView: View {
                         HStack {
                             if !controller.unquarantinedDetections.isEmpty {
                                 Button {
+                                    pendingQuarantinePaths = controller.unquarantinedDetections
                                     showQuarantineConfirmation = true
                                 } label: {
-                                    Label("Quarantine Detected Files…", systemImage: "shield.lefthalf.filled")
+                                    Label("Remediate All…", systemImage: "checkmark.shield.fill")
                                 }
+                                .buttonStyle(.borderedProminent)
                             }
                             Button { controller.revealQuarantine() } label: {
                                 Label("Show Quarantine Folder", systemImage: "folder")
@@ -525,13 +528,14 @@ private struct ResultsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .alert("Quarantine detected files?", isPresented: $showQuarantineConfirmation) {
+        .alert(remediationTitle, isPresented: $showQuarantineConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button("Quarantine \(controller.unquarantinedDetections.count) File\(controller.unquarantinedDetections.count == 1 ? "" : "s")") {
-                controller.quarantineDetectedFiles()
+            Button("Quarantine \(pendingQuarantinePaths.count) File\(pendingQuarantinePaths.count == 1 ? "" : "s")") {
+                controller.quarantineDetections(pendingQuarantinePaths)
+                pendingQuarantinePaths = []
             }
         } message: {
-            Text("The selected detections will be moved into Aura Protect’s private quarantine. They will not be deleted. Because false positives are possible, review the detected paths before continuing.")
+            Text("The selected detection\(pendingQuarantinePaths.count == 1 ? "" : "s") will be moved into Aura Protect’s private quarantine. Nothing will be deleted, and recovery information will be saved.")
         }
     }
 
@@ -541,9 +545,25 @@ private struct ResultsView: View {
 
     private func detectionRow(_ path: String) -> some View {
         let quarantined = controller.quarantinedPaths.contains(path)
-        return Label(path, systemImage: quarantined ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
-            .foregroundStyle(quarantined ? Color.secondary : Color.red)
-            .textSelection(.enabled)
+        return HStack(spacing: 10) {
+            Label(path, systemImage: quarantined ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(quarantined ? Color.secondary : Color.red)
+                .textSelection(.enabled)
+            Spacer()
+            if quarantined {
+                Text("Quarantined").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Remediate…") {
+                    pendingQuarantinePaths = [path]
+                    showQuarantineConfirmation = true
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private var remediationTitle: String {
+        pendingQuarantinePaths.count == 1 ? "Remediate detected file?" : "Remediate all detected files?"
     }
 
     private var cleanFiles: Int {

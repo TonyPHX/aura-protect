@@ -413,7 +413,13 @@ final class ScanController {
     }
 
     func quarantineDetectedFiles() {
-        guard state.hasResults, !unquarantinedDetections.isEmpty else { return }
+        quarantineDetections(unquarantinedDetections)
+    }
+
+    func quarantineDetections(_ displayedPaths: [String]) {
+        let requested = Set(displayedPaths)
+        let eligiblePaths = unquarantinedDetections.filter { requested.contains($0) }
+        guard state.hasResults, !eligiblePaths.isEmpty else { return }
         let manager = FileManager.default
         let directory = Self.quarantineDirectory
         do {
@@ -425,7 +431,7 @@ final class ScanController {
         }
         var moved = 0
         var failures: [String] = []
-        for displayedPath in unquarantinedDetections {
+        for displayedPath in eligiblePaths {
             let source = Self.resolveDetectionPath(displayedPath)
             guard manager.fileExists(atPath: source.path) else {
                 failures.append("\(displayedPath): file is no longer present")
