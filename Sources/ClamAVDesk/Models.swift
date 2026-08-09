@@ -89,6 +89,11 @@ struct SignatureSnapshot: Codable, Equatable {
     let capturedAt: Date
     let categories: [SignatureCategory]
     var total: Int { categories.reduce(0) { $0 + $1.count } }
+
+    func increase(since previous: SignatureSnapshot) -> Int? {
+        let difference = total - previous.total
+        return difference > 0 ? difference : nil
+    }
 }
 
 struct ScanChartItem: Identifiable {

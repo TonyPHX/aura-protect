@@ -245,12 +245,14 @@ private struct StatusView: View {
 
     @ViewBuilder
     private func comparison(_ current: SignatureSnapshot) -> some View {
-        if let previous = controller.previousSignatureSnapshot {
-            let change = current.total - previous.total
-            Text("\(change >= 0 ? "+" : "")\(change.formatted()) since previous update")
-                .font(.caption.bold()).foregroundStyle(change >= 0 ? .green : .orange)
+        if let previous = controller.previousSignatureSnapshot,
+           let increase = current.increase(since: previous) {
+            Text("+\(increase.formatted()) since previous update")
+                .font(.caption.bold()).foregroundStyle(.green)
         } else {
-            Text("Baseline recorded").font(.caption).foregroundStyle(.secondary)
+            if controller.previousSignatureSnapshot == nil {
+                Text("Baseline recorded").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
