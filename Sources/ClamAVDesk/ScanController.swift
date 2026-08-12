@@ -24,7 +24,6 @@ final class ScanController {
     var engineIsCurrent = false
     var definitionsAreCurrent = false
     var signatureSnapshot: SignatureSnapshot?
-    var previousSignatureSnapshot: SignatureSnapshot?
     var scanCompletedAt: Date?
     var quarantinedPaths: Set<String> = []
     var quarantineStatus: String?
@@ -51,8 +50,7 @@ final class ScanController {
 
     init() {
         Self.migrateLegacySupportData()
-        loadSignatureSnapshots()
-        refreshSignatureSnapshot(recordChange: false)
+        refreshSignatureSnapshot()
         checkFullDiskAccess(showHelpWhenMissing: true)
         Task {
             await loadVersion()
@@ -200,7 +198,7 @@ final class ScanController {
                     self?.definitionsStatus = process.terminationStatus == 0
                         ? "Definitions verified \(Date.now.formatted(date: .abbreviated, time: .shortened))"
                         : Self.friendlyUpdateError(text)
-                    if process.terminationStatus == 0 { self?.refreshSignatureSnapshot(recordChange: true) }
+                    if process.terminationStatus == 0 { self?.refreshSignatureSnapshot() }
                     self?.updateProcess = nil
                 }
             } catch {
@@ -628,28 +626,8 @@ final class ScanController {
         if log.count > 100_000 { log.removeFirst(log.count - 80_000) }
     }
 
-    private func loadSignatureSnapshots() {
-        let decoder = JSONDecoder()
-        if let data = UserDefaults.standard.data(forKey: "currentSignatureSnapshot") {
-            signatureSnapshot = try? decoder.decode(SignatureSnapshot.self, from: data)
-        }
-        if let data = UserDefaults.standard.data(forKey: "previousSignatureSnapshot") {
-            previousSignatureSnapshot = try? decoder.decode(SignatureSnapshot.self, from: data)
-        }
-    }
-
-    private func refreshSignatureSnapshot(recordChange: Bool) {
-        guard let fresh = Self.readSignatureSnapshot() else { return }
-        if recordChange, let current = signatureSnapshot, current.categories != fresh.categories {
-            previousSignatureSnapshot = current
-            if let data = try? JSONEncoder().encode(current) {
-                UserDefaults.standard.set(data, forKey: "previousSignatureSnapshot")
-            }
-        }
-        signatureSnapshot = fresh
-        if let data = try? JSONEncoder().encode(fresh) {
-            UserDefaults.standard.set(data, forKey: "currentSignatureSnapshot")
-        }
+    private func refreshSignatureSnapshot() {
+        signatureSnapshot = Self.readSignatureSnapshot()
     }
 
     private func loadVersion() async {

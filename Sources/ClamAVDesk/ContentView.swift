@@ -170,7 +170,6 @@ private struct StatusView: View {
                             Text("signatures covering viruses, trojans, ransomware, and other malware")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            comparison(snapshot)
                         }
                         Chart(snapshot.categories) { category in
                             BarMark(x: .value("Signatures", category.count),
@@ -195,17 +194,6 @@ private struct StatusView: View {
             }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    @ViewBuilder
-    private func comparison(_ current: SignatureSnapshot) -> some View {
-        if let previous = controller.previousSignatureSnapshot {
-            let change = current.total - previous.total
-            Text("\(change >= 0 ? "+" : "")\(change.formatted()) since previous update")
-                .font(.caption.bold()).foregroundStyle(change >= 0 ? .green : .orange)
-        } else {
-            Text("Baseline recorded").font(.caption).foregroundStyle(.secondary)
         }
     }
 
