@@ -23,7 +23,7 @@ plutil -insert CFBundleName -string "Aura Protect" "$APP_DIR/Contents/Info.plist
 plutil -insert CFBundleDisplayName -string "Aura Protect" "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundleIconFile -string AuraProtectIcon.icns "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundlePackageType -string APPL "$APP_DIR/Contents/Info.plist"
-plutil -insert CFBundleShortVersionString -string 1.0.0 "$APP_DIR/Contents/Info.plist"
+plutil -insert CFBundleShortVersionString -string 1.1.6 "$APP_DIR/Contents/Info.plist"
 plutil -insert LSMinimumSystemVersion -string 14.0 "$APP_DIR/Contents/Info.plist"
 plutil -insert NSHighResolutionCapable -bool true "$APP_DIR/Contents/Info.plist"
 codesign --force --deep --sign - "$APP_DIR"
