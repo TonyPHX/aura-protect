@@ -1,7 +1,7 @@
 import Foundation
 
 enum ScanState: Equatable {
-    case idle, counting, scanning, cancelling, finished, failed
+    case idle, counting, scanning, cancelling, finished, finishedWithIssues, failed
 
     var label: String {
         switch self {
@@ -10,13 +10,25 @@ enum ScanState: Equatable {
         case .scanning: "Scanning…"
         case .cancelling: "Cancelling…"
         case .finished: "Scan complete"
+        case .finishedWithIssues: "Scan complete with issues"
         case .failed: "Scan failed"
         }
     }
+
+    var hasResults: Bool {
+        self == .finished || self == .finishedWithIssues || self == .failed
+    }
+
+    static func completionState(exitCode: Int32, processedFiles: Int) -> ScanState {
+        if exitCode <= 1 { return .finished }
+        return processedFiles > 0 ? .finishedWithIssues : .failed
+    }
 }
 
-struct ScanSettings: Codable, Equatable {
+struct ScanSettings: Codable, Equatable, Sendable {
     var parallelScanning = true
+    var automaticWorkerTuning = true
+    var incrementalScanning = false
     var workerCount = min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
     var recursive = true
     var scanArchives = true
@@ -25,6 +37,23 @@ struct ScanSettings: Codable, Equatable {
     var followSymlinks = false
     var bellOnDetection = false
     var maxFileSizeMB = 100
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        parallelScanning = try values.decodeIfPresent(Bool.self, forKey: .parallelScanning) ?? true
+        automaticWorkerTuning = try values.decodeIfPresent(Bool.self, forKey: .automaticWorkerTuning) ?? true
+        incrementalScanning = try values.decodeIfPresent(Bool.self, forKey: .incrementalScanning) ?? false
+        workerCount = try values.decodeIfPresent(Int.self, forKey: .workerCount) ?? min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
+        recursive = try values.decodeIfPresent(Bool.self, forKey: .recursive) ?? true
+        scanArchives = try values.decodeIfPresent(Bool.self, forKey: .scanArchives) ?? true
+        scanHidden = try values.decodeIfPresent(Bool.self, forKey: .scanHidden) ?? true
+        detectPUA = try values.decodeIfPresent(Bool.self, forKey: .detectPUA) ?? false
+        followSymlinks = try values.decodeIfPresent(Bool.self, forKey: .followSymlinks) ?? false
+        bellOnDetection = try values.decodeIfPresent(Bool.self, forKey: .bellOnDetection) ?? false
+        maxFileSizeMB = try values.decodeIfPresent(Int.self, forKey: .maxFileSizeMB) ?? 100
+    }
 
     static let defaultsKey = "scanSettings"
 
@@ -45,6 +74,8 @@ struct ScanSummary: Equatable {
     var scannedFiles = 0
     var infectedFiles = 0
     var errors = 0
+    var skippedFiles = 0
+    var reusedFiles = 0
     var duration: TimeInterval = 0
 }
 
@@ -75,6 +106,11 @@ struct QuarantineRecord: Codable {
 }
 
 enum OutputParser {
+    static func resultPath(_ line: String) -> String? {
+        guard isFileResult(line), let separator = line.range(of: ": ", options: .backwards)?.lowerBound else { return nil }
+        return String(line[..<separator])
+    }
+
     static func isFileResult(_ line: String) -> Bool {
         guard !line.hasPrefix("-----------"),
               !line.hasPrefix("Known viruses:"),
@@ -94,13 +130,22 @@ enum OutputParser {
         return String(line[..<separator])
     }
 
-    static func isConcerning(_ line: String) -> Bool {
-        if line.hasSuffix(" FOUND") || line.contains(" ERROR") { return true }
-        let lower = line.lowercased()
-        guard !lower.contains("infected files: 0"),
-              !lower.contains("total errors: 0") else { return false }
-        return lower.contains("error:") || lower.contains("warning:") ||
-               lower.contains("permission denied") || lower.contains("access denied") ||
-               lower.contains("failed") || lower.contains("can't open") || lower.contains("cannot open")
+    static func isGenuineError(_ line: String) -> Bool {
+        let lower = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lower.isEmpty,
+              !lower.hasSuffix(" ok"),
+              !lower.hasSuffix(" found"),
+              !lower.hasPrefix("infected files:"),
+              !lower.hasPrefix("total errors:"),
+              !isFileAccessFailure(lower) else { return false }
+        return lower.contains(" error") || lower.hasPrefix("error") ||
+               lower.contains("fatal") || lower.contains("failed")
+    }
+
+    private static func isFileAccessFailure(_ lower: String) -> Bool {
+        ["permission denied", "access denied", "operation not permitted",
+         "can't open", "cannot open", "could not open",
+         "can't access", "cannot access", "could not access",
+         "no such file", "file not found"].contains { lower.contains($0) }
     }
 }

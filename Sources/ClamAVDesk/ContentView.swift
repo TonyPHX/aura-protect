@@ -39,6 +39,8 @@ struct ContentView: View {
 }
 
 private struct LicensesView: View {
+    @Environment(ScanController.self) private var controller
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -55,7 +57,7 @@ private struct LicensesView: View {
 
                 GroupBox("Aura Protect license") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Copyright © 2026 Tony Simek and Aura Protect contributors.")
+                        Text(verbatim: copyrightNotice)
                         Text("Aura Protect is free and open-source software distributed under the GNU General Public License, version 2 only (GPL-2.0-only). It comes with no warranty.")
                         HStack {
                             Link("View source code", destination: URL(string: "https://github.com/TonyPHX/aura-protect")!)
@@ -67,11 +69,13 @@ private struct LicensesView: View {
                 GroupBox("ClamAV attribution") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Aura Protect is powered by ClamAV, the open-source antivirus engine created and maintained by the ClamAV Team and Cisco Systems, Inc.")
-                        Text("The bundled ClamAV 1.5.3 runtime is distributed under the GNU General Public License, version 2. Its corresponding source code and third-party license notices are available below and are also included with this application.")
+                        Text(engineAttributionText)
                         HStack {
                             Link("ClamAV project", destination: URL(string: "https://www.clamav.net")!)
-                            Link("ClamAV 1.5.3 source", destination: URL(string: "https://github.com/Cisco-Talos/clamav/tree/clamav-1.5.3")!)
-                            Button("Read ClamAV license") { openResource("ClamAV-License", extension: "txt") }
+                            if let sourceURL = clamAVSourceURL {
+                                Link("ClamAV \(installedEngineVersion) source", destination: sourceURL)
+                            }
+                            Button("Read ClamAV license") { openClamAVLicense() }
                         }
                         Text("Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -93,9 +97,50 @@ private struct LicensesView: View {
         Bundle.main.url(forResource: "AuraProtectIcon", withExtension: "png").flatMap(NSImage.init(contentsOf:))
     }
 
+    private var copyrightYear: Int {
+        max(Calendar.current.component(.year, from: Date()), 2026)
+    }
+
+    private var copyrightNotice: String {
+        "Copyright © \(String(copyrightYear)) Tony Simek and Aura Protect contributors."
+    }
+
+    private var installedEngineVersion: String {
+        EngineUpdater.version(from: controller.clamVersion) ?? "version unavailable"
+    }
+
+    private var engineAttributionText: String {
+        let license = "is distributed under the GNU General Public License, version 2. Its corresponding source code and third-party license notices are available below and are also included with this application."
+        guard let version = EngineUpdater.version(from: controller.clamVersion) else {
+            return "The installed ClamAV engine version is currently unavailable. ClamAV \(license)"
+        }
+        return "The installed ClamAV \(version) runtime \(license)"
+    }
+
+    private var clamAVSourceURL: URL? {
+        guard let version = EngineUpdater.version(from: controller.clamVersion) else { return nil }
+        return URL(string: "https://github.com/Cisco-Talos/clamav/tree/clamav-\(version)")
+    }
+
     private func openResource(_ name: String, extension fileExtension: String) {
         if let url = Bundle.main.url(forResource: name, withExtension: fileExtension) {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func openClamAVLicense() {
+        if let executable = ScanController.findExecutable("clamscan") {
+            let license = executable.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("licenses/ClamAV-License.txt")
+            if FileManager.default.fileExists(atPath: license.path) {
+                NSWorkspace.shared.open(license)
+                return
+            }
+        }
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("ClamAV/licenses/ClamAV-License.txt"),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            NSWorkspace.shared.open(bundled)
         }
     }
 
@@ -170,7 +215,6 @@ private struct StatusView: View {
                             Text("signatures covering viruses, trojans, ransomware, and other malware")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            comparison(snapshot)
                         }
                         Chart(snapshot.categories) { category in
                             BarMark(x: .value("Signatures", category.count),
@@ -195,17 +239,6 @@ private struct StatusView: View {
             }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    @ViewBuilder
-    private func comparison(_ current: SignatureSnapshot) -> some View {
-        if let previous = controller.previousSignatureSnapshot {
-            let change = current.total - previous.total
-            Text("\(change >= 0 ? "+" : "")\(change.formatted()) since previous update")
-                .font(.caption.bold()).foregroundStyle(change >= 0 ? .green : .orange)
-        } else {
-            Text("Baseline recorded").font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -358,6 +391,11 @@ private struct ScanView: View {
                 Label("\(controller.detections.count) threat\(controller.detections.count == 1 ? "" : "s") detected", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red).font(.headline)
             }
+            if controller.state == .finishedWithIssues {
+                Label("The scan completed, but ClamAV reported \(controller.summary.errors) error\(controller.summary.errors == 1 ? "" : "s"). Open Results for the affected paths and details.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
             Spacer()
         }
     }
@@ -373,19 +411,20 @@ private struct ScanView: View {
 private struct ResultsView: View {
     @Environment(ScanController.self) private var controller
     @State private var showQuarantineConfirmation = false
+    @State private var pendingQuarantinePaths: [String] = []
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Scan Results").font(.largeTitle.bold())
                 Spacer()
-                if controller.state == .finished || controller.state == .failed {
+                if controller.state.hasResults {
                     Button { controller.exportReport() } label: {
                         Label("Save Report…", systemImage: "square.and.arrow.down")
                     }
                 }
             }
-            if controller.state == .finished || controller.state == .failed {
+            if controller.state.hasResults {
                 HStack(spacing: 28) {
                     metric("Files scanned", "\(controller.summary.scannedFiles)", .blue)
                     metric("Threats", "\(controller.summary.infectedFiles)", controller.summary.infectedFiles == 0 ? .green : .red)
@@ -407,6 +446,8 @@ private struct ResultsView: View {
                             reportLine("Clean files", cleanFiles.formatted(), .green)
                             reportLine("Concerning detections", controller.summary.infectedFiles.formatted(), .red)
                             reportLine("Scan errors", controller.summary.errors.formatted(), .orange)
+                            reportLine("Skipped by limits or access", controller.summary.skippedFiles.formatted(), .orange)
+                            reportLine("Unchanged files reused", controller.summary.reusedFiles.formatted(), .blue)
                             Divider()
                             reportLine("Average throughput", throughput, .blue)
                             reportLine("Protection signatures",
@@ -430,10 +471,12 @@ private struct ResultsView: View {
                         HStack {
                             if !controller.unquarantinedDetections.isEmpty {
                                 Button {
+                                    pendingQuarantinePaths = controller.unquarantinedDetections
                                     showQuarantineConfirmation = true
                                 } label: {
-                                    Label("Quarantine Detected Files…", systemImage: "shield.lefthalf.filled")
+                                    Label("Remediate All…", systemImage: "checkmark.shield.fill")
                                 }
+                                .buttonStyle(.borderedProminent)
                             }
                             Button { controller.revealQuarantine() } label: {
                                 Label("Show Quarantine Folder", systemImage: "folder")
@@ -451,20 +494,34 @@ private struct ResultsView: View {
                     }.padding(8)
                 }
             }
-            GroupBox("Concerning findings and scan errors") {
+            if !controller.skippedFileDetails.isEmpty {
+                GroupBox("Files not scanned") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("These files were outside the configured size limit or could not be read. The saved report includes the total.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(controller.skippedFileDetails, id: \.self) { Text($0).font(.caption.monospaced()).textSelection(.enabled) }
+                        if controller.summary.skippedFiles > controller.skippedFileDetails.count {
+                            Text("…and \(controller.summary.skippedFiles - controller.skippedFileDetails.count) more")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.padding(8)
+                }
+            }
+            GroupBox("Scan errors") {
                 Text(controller.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading).padding(8)
             }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .alert("Quarantine detected files?", isPresented: $showQuarantineConfirmation) {
+        .alert(remediationTitle, isPresented: $showQuarantineConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button("Quarantine \(controller.unquarantinedDetections.count) File\(controller.unquarantinedDetections.count == 1 ? "" : "s")") {
-                controller.quarantineDetectedFiles()
+            Button("Quarantine \(pendingQuarantinePaths.count) File\(pendingQuarantinePaths.count == 1 ? "" : "s")") {
+                controller.quarantineDetections(pendingQuarantinePaths)
+                pendingQuarantinePaths = []
             }
         } message: {
-            Text("The selected detections will be moved into Aura Protect’s private quarantine. They will not be deleted. Because false positives are possible, review the detected paths before continuing.")
+            Text("The selected detection\(pendingQuarantinePaths.count == 1 ? "" : "s") will be moved into Aura Protect’s private quarantine. Nothing will be deleted, and recovery information will be saved.")
         }
     }
 
@@ -474,9 +531,25 @@ private struct ResultsView: View {
 
     private func detectionRow(_ path: String) -> some View {
         let quarantined = controller.quarantinedPaths.contains(path)
-        return Label(path, systemImage: quarantined ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
-            .foregroundStyle(quarantined ? Color.secondary : Color.red)
-            .textSelection(.enabled)
+        return HStack(spacing: 10) {
+            Label(path, systemImage: quarantined ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(quarantined ? Color.secondary : Color.red)
+                .textSelection(.enabled)
+            Spacer()
+            if quarantined {
+                Text("Quarantined").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Remediate…") {
+                    pendingQuarantinePaths = [path]
+                    showQuarantineConfirmation = true
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private var remediationTitle: String {
+        pendingQuarantinePaths.count == 1 ? "Remediate detected file?" : "Remediate all detected files?"
     }
 
     private var cleanFiles: Int {
@@ -508,8 +581,11 @@ private struct DefinitionsView: View {
             Text("Fresh definitions help ClamAV recognize recently discovered threats.").foregroundStyle(.secondary)
             GroupBox {
                 HStack(spacing: 16) {
-                    Image(systemName: controller.isUpdating ? "arrow.triangle.2.circlepath" : "checkmark.shield.fill")
-                        .font(.largeTitle).foregroundStyle(controller.isUpdating ? .blue : .green)
+                    Image(systemName: controller.isUpdating ? "arrow.triangle.2.circlepath" :
+                            (controller.definitionsAreCurrent ? "checkmark.shield.fill" : "xmark.shield.fill"))
+                        .font(.largeTitle)
+                        .foregroundStyle(controller.isUpdating ? Color.blue :
+                            (controller.definitionsAreCurrent ? Color.green : Color.red))
                     VStack(alignment: .leading) {
                         Text(controller.definitionsStatus).font(.headline)
                         Text("Uses the bundled ClamAV updater").foregroundStyle(.secondary)
@@ -519,6 +595,28 @@ private struct DefinitionsView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(controller.isUpdating || controller.isBusy || controller.isUpdatingEngine)
                 }.padding(12)
+            }
+            GroupBox("Definition database") {
+                Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 8) {
+                    GridRow { Text("Daily database version").foregroundStyle(.secondary); Text(controller.definitionDatabaseVersion).font(.headline.monospacedDigit()) }
+                    GridRow { Text("Database release").foregroundStyle(.secondary); Text(controller.definitionRelease) }
+                    GridRow { Text("Last attempt").foregroundStyle(.secondary); Text(formatted(controller.lastDefinitionsAttempt)) }
+                    GridRow { Text("Last successful update").foregroundStyle(.secondary); Text(formatted(controller.lastDefinitionsSuccess)) }
+                    GridRow { Text("Automatic checks").foregroundStyle(.secondary); Text("Every 4 hours while Aura Protect is open") }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }
+            GroupBox("Definition update log") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Recent update milestones, warnings, and errors. Repeated transport chatter is omitted.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(controller.definitionUpdateLog)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(8)
+                    }.frame(minHeight: 120, maxHeight: 220)
+                }
             }
             GroupBox("ClamAV engine") {
                 HStack(spacing: 12) {
@@ -534,7 +632,10 @@ private struct DefinitionsView: View {
             }
             Text("Definitions are stored privately in your user Library. Administrator access is not required.")
                 .font(.caption).foregroundStyle(.secondary)
-            Spacer()
         }
+    }
+
+    private func formatted(_ date: Date?) -> String {
+        date?.formatted(date: .abbreviated, time: .shortened) ?? "Never"
     }
 }

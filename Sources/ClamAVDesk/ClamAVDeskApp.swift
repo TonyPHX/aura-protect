@@ -17,6 +17,9 @@ struct ClamAVDeskApp: App {
             ContentView()
                 .environment(controller)
                 .frame(minWidth: 820, minHeight: 620)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    controller.shutdown()
+                }
         }
         .windowStyle(.titleBar)
         .commands {
