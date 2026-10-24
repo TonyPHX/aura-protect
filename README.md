@@ -4,6 +4,12 @@ A fast native macOS ClamAV front end. The official universal ClamAV runtime is b
 
 The Aura Protect artwork in `Assets` is packaged as the application, Finder, and Dock icon.
 
+## Download and user guide
+
+- [Latest Mac release](https://github.com/TonyPHX/aura-protect/releases/latest)
+- [User guide and release notes](https://github.com/TonyPHX/aura-protect/wiki)
+- [Manual release housekeeping checklist](RELEASING.md)
+
 ## Build
 
 ```sh
