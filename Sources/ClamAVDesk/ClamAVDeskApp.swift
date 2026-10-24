@@ -22,6 +22,7 @@ struct ClamAVDeskApp: App {
                     controller.shutdown()
                 }
         }
+        .defaultSize(width: 1180, height: 900)
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }

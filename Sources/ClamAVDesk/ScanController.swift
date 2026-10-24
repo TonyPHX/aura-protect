@@ -21,6 +21,14 @@ final class ScanController {
     var log = "Choose a file or folder to begin."
     var detections: [String] = []
     var summary = ScanSummary()
+    var scanTelemetry = ScanTelemetry()
+    var scanWasCancelled = false
+    private var telemetryWorkers: [ObjectIdentifier: Int] = [:]
+    private var queueFileCounts: [URL: Int] = [:]
+    var liveScanErrors: Int { max(scanErrorCount, summary.errors, state == .failed ? 1 : 0) }
+    var liveSkippedFiles: Int { skippedFileCount }
+    var liveReusedFiles: Int { reusedFileCount }
+    var scanFraction: Double { totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 1) : 0 }
     var definitionsStatus = "Not checked"
     var isUpdating = false
     var clamVersion = "Checking…"
@@ -107,6 +115,7 @@ final class ScanController {
         let skippedCount: Int
         let reused: Int
         var stamps: [String: CleanFileStamp] = [:]
+        var queueCounts: [URL: Int] = [:]
     }
 
     private static let lastDefinitionsAttemptKey = "lastDefinitionsAttempt"
@@ -199,6 +208,9 @@ final class ScanController {
         resetScan()
         state = .counting
         startTime = .now
+        timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshTiming() }
+        }
         log = ""
         var tunedSettings = settings
         tunedSettings.workerCount = tunedSettings.parallelScanning ? effectiveWorkerCount : 1
@@ -237,12 +249,14 @@ final class ScanController {
                 return
             }
             preScanStamps = preparation.stamps
+            queueFileCounts = preparation.queueCounts
             totalFiles = preparation.count
             skippedFileDetails = preparation.skipped
             skippedFileCount = preparation.skippedCount
             reusedFileCount = preparation.reused
             pendingCache = currentSettings.incrementalScanning ? reusableCache : [:]
             if preparation.count == 0 {
+                scanWorkers = 0
                 state = .scanning
                 finishScan(exitCode: 0)
                 return
@@ -594,6 +608,7 @@ final class ScanController {
     }
 
     private func launchScan(executable: URL, target: URL, settings: ScanSettings) {
+        scanTelemetry.start(queues: [totalFiles], now: ProcessInfo.processInfo.systemUptime)
         let process = Process()
         let pipe = Pipe()
         process.executableURL = executable
@@ -603,15 +618,15 @@ final class ScanController {
         process.standardError = pipe
         scanProcess = process
         state = .scanning
-        timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshTiming() }
-        }
         do { try process.run() }
         catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
         observeScanProcess(process, pipe: pipe)
     }
 
     private func launchInventoryScan(executable: URL, fileLists: [URL], directFiles: [URL], settings: ScanSettings) {
+        scanWorkers = 1
+        telemetryWorkers = [:]
+        scanTelemetry.start(queues: [totalFiles], now: ProcessInfo.processInfo.systemUptime)
         guard let fileList = try? Self.consolidateScanFileLists(fileLists) else {
             fail("Aura Protect could not prepare the scanner input list.")
             return
@@ -633,9 +648,6 @@ final class ScanController {
         process.standardError = pipe
         scanProcess = process
         state = .scanning
-        timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshTiming() }
-        }
         do { try process.run() }
         catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
         observeScanProcess(process, pipe: pipe)
@@ -727,17 +739,19 @@ final class ScanController {
     }
 
     private func launchDaemonClients(executable: URL, config: URL, fileLists: [URL], directFiles: [URL]) {
+        scanWorkers = fileLists.count + directFiles.count
+        telemetryWorkers = [:]
+        scanTelemetry.start(queues: fileLists.map { queueFileCounts[$0] ?? 0 } + directFiles.map { _ in 1 },
+                            now: ProcessInfo.processInfo.systemUptime)
         parallelClientsRemaining = fileLists.count + directFiles.count
         parallelExitCode = 0
-        timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshTiming() }
-        }
         let clients: [(fileList: URL?, directFile: URL?)] =
             fileLists.map { ($0, nil) } + directFiles.map { (nil, $0) }
-        for client in clients {
+        for (workerIndex, client) in clients.enumerated() {
             let process = Process()
             let pipe = Pipe()
             let source = ObjectIdentifier(process)
+            telemetryWorkers[source] = workerIndex
             process.executableURL = executable
             process.qualityOfService = scanMode == .quiet ? .utility : .userInitiated
             Self.configureEnvironment(for: process, executable: executable)
@@ -776,17 +790,18 @@ final class ScanController {
             }
             process.waitUntilExit()
             await self?.scanProcessEnded(process.terminationStatus, directFile: directFile,
-                                         parallel: parallel, generation: generation)
+                                         parallel: parallel, source: source, generation: generation)
         }
     }
 
     private func receiveScanData(_ text: String, source: ObjectIdentifier?, generation: UUID) {
-        guard scanGeneration == generation, isBusy else { return }
+        guard scanGeneration == generation, state == .scanning else { return }
         consume(text, source: source)
     }
 
-    private func scanProcessEnded(_ code: Int32, directFile: URL?, parallel: Bool, generation: UUID) {
+    private func scanProcessEnded(_ code: Int32, directFile: URL?, parallel: Bool, source: ObjectIdentifier?, generation: UUID) {
         guard scanGeneration == generation, isBusy else { return }
+        scanTelemetry.finishWorker(source.flatMap { telemetryWorkers[$0] } ?? 0, code: code)
         if parallel { parallelClientFinished(exitCode: code, directFile: directFile) }
         else { finishScan(exitCode: code) }
     }
@@ -809,8 +824,15 @@ final class ScanController {
         let lines = buffer.components(separatedBy: .newlines)
         if let source { parallelOutputBuffers[source] = lines.last ?? "" }
         else { outputBuffer = lines.last ?? "" }
+        for line in lines.dropLast() where line.hasPrefix("Scanning /") {
+            scanTelemetry.report(path: String(line.dropFirst("Scanning ".count)),
+                                 worker: source.flatMap { telemetryWorkers[$0] } ?? 0, completed: false)
+        }
         for line in lines.dropLast() where OutputParser.isFileResult(line) {
             processedFiles += 1
+            if let path = OutputParser.resultPath(line) {
+                scanTelemetry.report(path: path, worker: source.flatMap { telemetryWorkers[$0] } ?? 0, completed: true)
+            }
             updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if OutputParser.isIncomplete(line) {
@@ -833,15 +855,19 @@ final class ScanController {
     private func refreshTiming() {
         guard let startTime else { return }
         elapsed = Date().timeIntervalSince(startTime)
+        if state == .scanning {
+            scanTelemetry.sample(completed: processedFiles, now: ProcessInfo.processInfo.systemUptime)
+        }
         guard processedFiles > 0, totalFiles > processedFiles else { estimatedRemaining = nil; return }
         estimatedRemaining = elapsed / Double(processedFiles) * Double(totalFiles - processedFiles)
     }
 
     private func finishScan(exitCode: Int32) {
         guard isBusy else { return }
-        let remainingLines = [outputBuffer] + Array(parallelOutputBuffers.values)
-        for line in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
+        let remainingLines: [(String, Int)] = [(outputBuffer, 0)] + parallelOutputBuffers.map { ($0.value, telemetryWorkers[$0.key] ?? 0) }
+        for (line, worker) in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
             processedFiles += 1
+            if let path = OutputParser.resultPath(line) { scanTelemetry.report(path: path, worker: worker, completed: true) }
             updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if OutputParser.isIncomplete(line) {
@@ -861,6 +887,8 @@ final class ScanController {
         timer?.invalidate()
         timer = nil
         refreshTiming()
+        scanTelemetry.sample(completed: processedFiles, now: ProcessInfo.processInfo.systemUptime, force: true)
+        scanTelemetry.latestPathIsCurrent = false
         estimatedRemaining = nil
         scanProcess = nil
         scanProcesses = []
@@ -871,6 +899,7 @@ final class ScanController {
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
         scanFileListURLs = []
         if state == .cancelling {
+            scanWasCancelled = true
             state = .idle
             log += "\nScan cancelled."
             return
@@ -894,6 +923,10 @@ final class ScanController {
 
     private func resetScan() {
         scanGeneration = UUID()
+        scanTelemetry = .init()
+        scanWasCancelled = false
+        telemetryWorkers = [:]
+        queueFileCounts = [:]
         scanTask?.cancel()
         inventoryTask?.cancel()
         timer?.invalidate()
@@ -914,6 +947,8 @@ final class ScanController {
     }
 
     private func fail(_ message: String) {
+        for worker in scanTelemetry.workers where worker.exitCode == nil { scanTelemetry.finishWorker(worker.id, code: 2) }
+        scanTelemetry.latestPathIsCurrent = false
         timer?.invalidate(); timer = nil
         state = .failed; log = message
     }
@@ -1208,7 +1243,8 @@ final class ScanController {
         completed = true
         return ScanPreparation(count: regularCount + directFiles.count, fileLists: usedLists,
                                directFiles: directFiles, skipped: skipped,
-                               skippedCount: skippedCount, reused: reused, stamps: stamps)
+                               skippedCount: skippedCount, reused: reused, stamps: stamps,
+                               queueCounts: Dictionary(uniqueKeysWithValues: zip(fileLists, groupCounts)))
     }
 
     nonisolated static func lastUsefulLine(_ text: String) -> String? {

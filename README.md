@@ -33,6 +33,14 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.0 scan console
+
+The Scan screen now uses a native dark science-console design with cyan, amber, and muted violet accents. A segmented ring shows completed files against the known inventory; inventory preparation stays indeterminate until that total is available.
+
+The console measures recent file completions per second, elapsed time, an approximate ETA, and actual worker-queue completion. The recent-minute chart retains at most 61 samples and updates at most once per second, plus a final partial interval. File activity is labeled **Current File** only when ClamAV reports a scanning event; otherwise it is **Last Reported File**. Long paths truncate with the full path available on hover.
+
+Detections, skipped files, incomplete inspections, operational errors, and reused results stay separate. Start/Cancel controls remain visible while scrolling, narrow windows use a stacked layout, and ring/queue transitions respect macOS Reduce Motion. These graphics are drawn in SwiftUI; no generated mockup image is embedded in the app. Other screens keep their native appearance. Quarantine remains manual.
+
 ## Aura Protect 1.1.9
 
 - ClamAV 1.5.4 is bundled. Scanning remains available with a working installed engine and databases when online update checks fail. Updates shows the last successful definition check; protected folders still require Full Disk Access.
