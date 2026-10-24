@@ -25,7 +25,24 @@ enum ScanState: Equatable {
     }
 }
 
+enum ScanMode: String, Codable, CaseIterable, Identifiable {
+    case quiet = "Quiet", balanced = "Balanced", fast = "Fast"
+    var id: String { rawValue }
+    func workers(cores: Int, memoryGB: Int) -> Int {
+        switch self {
+        case .quiet: return 1
+        case .balanced: return min(max(min(cores / 2, memoryGB / 2), 1), 4)
+        case .fast: return min(max(min(cores - 1, memoryGB / 2), 1), 8)
+        }
+    }
+}
+
 struct ScanSettings: Codable, Equatable, Sendable {
+    var scanMode: ScanMode = .balanced
+    var monitorDownloads = false
+    var scheduledScan = false
+    var scheduledHour = 12
+    var scheduledTarget = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
     var parallelScanning = true
     var automaticWorkerTuning = true
     var incrementalScanning = false
@@ -42,6 +59,11 @@ struct ScanSettings: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        scanMode = try values.decodeIfPresent(ScanMode.self, forKey: .scanMode) ?? .balanced
+        monitorDownloads = try values.decodeIfPresent(Bool.self, forKey: .monitorDownloads) ?? false
+        scheduledScan = try values.decodeIfPresent(Bool.self, forKey: .scheduledScan) ?? false
+        scheduledHour = min(max(try values.decodeIfPresent(Int.self, forKey: .scheduledHour) ?? 12, 0), 23)
+        scheduledTarget = try values.decodeIfPresent(String.self, forKey: .scheduledTarget) ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
         parallelScanning = try values.decodeIfPresent(Bool.self, forKey: .parallelScanning) ?? true
         automaticWorkerTuning = try values.decodeIfPresent(Bool.self, forKey: .automaticWorkerTuning) ?? true
         incrementalScanning = try values.decodeIfPresent(Bool.self, forKey: .incrementalScanning) ?? false
@@ -75,6 +97,7 @@ struct ScanSummary: Equatable {
     var infectedFiles = 0
     var errors = 0
     var skippedFiles = 0
+    var incompleteFiles = 0
     var reusedFiles = 0
     var duration: TimeInterval = 0
 }
@@ -103,6 +126,26 @@ struct QuarantineRecord: Codable {
     let quarantinedPath: String
     let quarantinedAt: Date
     let engineVersion: String
+    var detectionName: String? = nil
+    var fileSHA256: String? = nil
+    var restoredAt: Date? = nil
+    var originalPermissions: Int? = nil
+}
+
+struct ScanHistoryEntry: Codable, Identifiable {
+    let id: UUID
+    let date: Date
+    let target: String
+    let scanned: Int
+    let reused: Int
+    let skipped: Int
+    let incomplete: Int
+    let detections: [String]
+    let duration: TimeInterval
+    let mode: ScanMode
+    let workers: Int
+    let engine: String
+    var detectionDetails: [String: String]? = nil
 }
 
 enum OutputParser {
@@ -122,6 +165,12 @@ enum OutputParser {
               !line.hasPrefix("Data read:"),
               !line.hasPrefix("Time:") else { return false }
         return line.contains(": ") && (line.hasSuffix(" OK") || line.hasSuffix(" FOUND") || line.contains(" ERROR"))
+    }
+
+    static func isIncomplete(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        return lower.contains("heuristics.limits.exceeded") || lower.contains("heuristics.encrypted") ||
+            lower.contains("size limit exceeded") || lower.contains("scan time limit")
     }
 
     static func infectionPath(_ line: String) -> String? {

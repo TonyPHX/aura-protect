@@ -16,6 +16,7 @@ struct ClamAVDeskApp: App {
         WindowGroup {
             ContentView()
                 .environment(controller)
+                .onOpenURL { controller.queueScans([$0]) }
                 .frame(minWidth: 820, minHeight: 620)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     controller.shutdown()
@@ -28,7 +29,7 @@ struct ClamAVDeskApp: App {
         Settings {
             SettingsView()
                 .environment(controller)
-                .frame(width: 520, height: 380)
+                .frame(width: 600, height: 680)
         }
     }
 }
