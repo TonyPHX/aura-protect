@@ -89,11 +89,6 @@ struct SignatureSnapshot: Codable, Equatable {
     let capturedAt: Date
     let categories: [SignatureCategory]
     var total: Int { categories.reduce(0) { $0 + $1.count } }
-
-    func increase(since previous: SignatureSnapshot) -> Int? {
-        let difference = total - previous.total
-        return difference > 0 ? difference : nil
-    }
 }
 
 struct ScanChartItem: Identifiable {
@@ -135,13 +130,22 @@ enum OutputParser {
         return String(line[..<separator])
     }
 
-    static func isConcerning(_ line: String) -> Bool {
-        if line.hasSuffix(" FOUND") || line.contains(" ERROR") { return true }
-        let lower = line.lowercased()
-        guard !lower.contains("infected files: 0"),
-              !lower.contains("total errors: 0") else { return false }
-        return lower.contains("error:") || lower.contains("warning:") ||
-               lower.contains("permission denied") || lower.contains("access denied") ||
-               lower.contains("failed") || lower.contains("can't open") || lower.contains("cannot open")
+    static func isGenuineError(_ line: String) -> Bool {
+        let lower = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lower.isEmpty,
+              !lower.hasSuffix(" ok"),
+              !lower.hasSuffix(" found"),
+              !lower.hasPrefix("infected files:"),
+              !lower.hasPrefix("total errors:"),
+              !isFileAccessFailure(lower) else { return false }
+        return lower.contains(" error") || lower.hasPrefix("error") ||
+               lower.contains("fatal") || lower.contains("failed")
+    }
+
+    private static func isFileAccessFailure(_ lower: String) -> Bool {
+        ["permission denied", "access denied", "operation not permitted",
+         "can't open", "cannot open", "could not open",
+         "can't access", "cannot access", "could not access",
+         "no such file", "file not found"].contains { lower.contains($0) }
     }
 }

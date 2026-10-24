@@ -29,7 +29,6 @@ final class ScanController {
     var definitionRelease = "Unknown"
     var definitionUpdateLog = "No definition update has been recorded yet."
     var signatureSnapshot: SignatureSnapshot?
-    var previousSignatureSnapshot: SignatureSnapshot?
     var scanCompletedAt: Date?
     var quarantinedPaths: Set<String> = []
     var quarantineStatus: String?
@@ -86,8 +85,7 @@ final class ScanController {
     init() {
         Self.migrateLegacySupportData()
         loadDefinitionUpdateState()
-        loadSignatureSnapshots()
-        refreshSignatureSnapshot(recordChange: false)
+        refreshSignatureSnapshot()
         checkFullDiskAccess(showHelpWhenMissing: true)
         scheduleDefinitionUpdates()
         Task {
@@ -284,7 +282,7 @@ final class ScanController {
                         self?.definitionRetryCount = 0
                         self?.definitionRetryTask?.cancel()
                         self?.refreshDefinitionDatabaseInfo()
-                        self?.refreshSignatureSnapshot(recordChange: true)
+                        self?.refreshSignatureSnapshot()
                     } else {
                         self?.definitionsStatus = Self.friendlyUpdateError(text)
                         self?.scheduleDefinitionRetry()
@@ -398,7 +396,7 @@ final class ScanController {
         QUARANTINE DISPOSITION
         \(quarantineStatus ?? "No quarantine action was taken.")
 
-        CONCERNING FINDINGS AND ERRORS
+        GENUINE SCAN ERRORS
         \(concerns)
 
         FILES NOT SCANNED (first 100)
@@ -712,7 +710,6 @@ final class ScanController {
                 let displayPath = directFile.path.replacingOccurrences(of: "\r", with: "\\r")
                     .replacingOccurrences(of: "\n", with: "\\n")
                 if !detections.contains(displayPath) { detections.append(displayPath) }
-                appendConcern("\(displayPath): Threat detected")
             }
             if exitCode > 1 { scanErrorCount += 1 }
             progress = totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 0.99) : 0
@@ -735,12 +732,11 @@ final class ScanController {
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if let path = OutputParser.infectionPath(line), !detections.contains(path) {
                 detections.append(path)
-                appendConcern(line)
-            } else if OutputParser.isConcerning(line) {
+            } else if OutputParser.isGenuineError(line) {
                 appendConcern(line)
             }
         }
-        for line in lines.dropLast() where !OutputParser.isFileResult(line) && OutputParser.isConcerning(line) {
+        for line in lines.dropLast() where !OutputParser.isFileResult(line) && OutputParser.isGenuineError(line) {
             appendConcern(line)
         }
         progress = totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 0.99) : 0
@@ -762,12 +758,11 @@ final class ScanController {
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if let path = OutputParser.infectionPath(line), !detections.contains(path) {
                 detections.append(path)
-                appendConcern(line)
-            } else if OutputParser.isConcerning(line) {
+            } else if OutputParser.isGenuineError(line) {
                 appendConcern(line)
             }
         }
-        if !daemonOutputBuffer.isEmpty && OutputParser.isConcerning(daemonOutputBuffer) { appendConcern(daemonOutputBuffer) }
+        if !daemonOutputBuffer.isEmpty && OutputParser.isGenuineError(daemonOutputBuffer) { appendConcern(daemonOutputBuffer) }
         daemonOutputBuffer = ""
         outputBuffer = ""
         parallelOutputBuffers = [:]
@@ -795,12 +790,10 @@ final class ScanController {
         scanCompletedAt = Date()
         progress = 1
         state = ScanState.completionState(exitCode: exitCode, processedFiles: processedFiles)
-        if state == .finishedWithIssues {
-            appendConcern("Scan completed, but ClamAV reported \(summary.errors) error\(summary.errors == 1 ? "" : "s") (exit code \(exitCode)). Review the errors above and the Files not scanned section.")
-        } else if state == .failed {
+        if state == .failed && log.isEmpty {
             appendConcern("ClamAV could not complete the scan (exit code \(exitCode)). Review the preceding error details.")
         }
-        if log.isEmpty { log = "No concerning detections or scan errors were reported." }
+        if log.isEmpty { log = "No genuine scan errors were reported." }
         if settings.bellOnDetection && !detections.isEmpty { NSSound.beep() }
     }
 
@@ -838,7 +831,7 @@ final class ScanController {
         daemonOutputBuffer += text
         let lines = daemonOutputBuffer.components(separatedBy: .newlines)
         daemonOutputBuffer = lines.last ?? ""
-        for line in lines.dropLast() where OutputParser.isConcerning(line) { appendConcern(line) }
+        for line in lines.dropLast() where OutputParser.isGenuineError(line) { appendConcern(line) }
     }
 
     private func appendConcern(_ line: String) {
@@ -860,28 +853,8 @@ final class ScanController {
                                        modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
     }
 
-    private func loadSignatureSnapshots() {
-        let decoder = JSONDecoder()
-        if let data = UserDefaults.standard.data(forKey: "currentSignatureSnapshot") {
-            signatureSnapshot = try? decoder.decode(SignatureSnapshot.self, from: data)
-        }
-        if let data = UserDefaults.standard.data(forKey: "previousSignatureSnapshot") {
-            previousSignatureSnapshot = try? decoder.decode(SignatureSnapshot.self, from: data)
-        }
-    }
-
-    private func refreshSignatureSnapshot(recordChange: Bool) {
-        guard let fresh = Self.readSignatureSnapshot() else { return }
-        if recordChange, let current = signatureSnapshot, current.categories != fresh.categories {
-            previousSignatureSnapshot = current
-            if let data = try? JSONEncoder().encode(current) {
-                UserDefaults.standard.set(data, forKey: "previousSignatureSnapshot")
-            }
-        }
-        signatureSnapshot = fresh
-        if let data = try? JSONEncoder().encode(fresh) {
-            UserDefaults.standard.set(data, forKey: "currentSignatureSnapshot")
-        }
+    private func refreshSignatureSnapshot() {
+        signatureSnapshot = Self.readSignatureSnapshot()
     }
 
     private func loadVersion() async {

@@ -215,7 +215,6 @@ private struct StatusView: View {
                             Text("signatures covering viruses, trojans, ransomware, and other malware")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            comparison(snapshot)
                         }
                         Chart(snapshot.categories) { category in
                             BarMark(x: .value("Signatures", category.count),
@@ -240,19 +239,6 @@ private struct StatusView: View {
             }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    @ViewBuilder
-    private func comparison(_ current: SignatureSnapshot) -> some View {
-        if let previous = controller.previousSignatureSnapshot,
-           let increase = current.increase(since: previous) {
-            Text("+\(increase.formatted()) since previous update")
-                .font(.caption.bold()).foregroundStyle(.green)
-        } else {
-            if controller.previousSignatureSnapshot == nil {
-                Text("Baseline recorded").font(.caption).foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -474,13 +460,17 @@ private struct ResultsView: View {
                 }
             }
             if !controller.detections.isEmpty {
-                GroupBox("Detected files") {
+                GroupBox("Detections and concerning results") {
                     VStack(alignment: .leading, spacing: 10) {
+                        Text("Review these results before choosing individual remediation or Remediate All.")
+                            .font(.caption).foregroundStyle(.secondary)
                         List {
                             ForEach(controller.detections, id: \.self) { path in
                                 detectionRow(path)
                             }
-                        }.frame(minHeight: 100, maxHeight: 180)
+                        }
+                        .scrollIndicators(.visible)
+                        .frame(minHeight: 100, maxHeight: 180)
 
                         HStack {
                             if !controller.unquarantinedDetections.isEmpty {
@@ -513,17 +503,33 @@ private struct ResultsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("These files were outside the configured size limit or could not be read. The saved report includes the total.")
                             .font(.caption).foregroundStyle(.secondary)
-                        ForEach(controller.skippedFileDetails, id: \.self) { Text($0).font(.caption.monospaced()).textSelection(.enabled) }
-                        if controller.summary.skippedFiles > controller.skippedFileDetails.count {
-                            Text("…and \(controller.summary.skippedFiles - controller.skippedFileDetails.count) more")
-                                .font(.caption).foregroundStyle(.secondary)
+                        ScrollView(.vertical) {
+                            LazyVStack(alignment: .leading, spacing: 4) {
+                                ForEach(controller.skippedFileDetails, id: \.self) {
+                                    Text($0).font(.caption.monospaced()).textSelection(.enabled)
+                                }
+                                if controller.summary.skippedFiles > controller.skippedFileDetails.count {
+                                    Text("…and \(controller.summary.skippedFiles - controller.skippedFileDetails.count) more")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .scrollIndicators(.visible)
+                        .frame(minHeight: 80, maxHeight: 140)
                     }.padding(8)
                 }
             }
-            GroupBox("Concerning findings and scan errors") {
-                Text(controller.log).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading).padding(8)
+            GroupBox("Genuine scan errors") {
+                ScrollView(.vertical) {
+                    Text(controller.log)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(8)
+                }
+                .scrollIndicators(.visible)
+                .frame(minHeight: 80, maxHeight: 160)
             }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -623,13 +629,15 @@ private struct DefinitionsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Recent update milestones, warnings, and errors. Repeated transport chatter is omitted.")
                         .font(.caption).foregroundStyle(.secondary)
-                    ScrollView {
+                    ScrollView(.vertical) {
                         Text(controller.definitionUpdateLog)
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                             .padding(8)
-                    }.frame(minHeight: 120, maxHeight: 220)
+                    }
+                    .scrollIndicators(.visible)
+                    .frame(minHeight: 100, maxHeight: 160)
                 }
             }
             GroupBox("ClamAV engine") {
