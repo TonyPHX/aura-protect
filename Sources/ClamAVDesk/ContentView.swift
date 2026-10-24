@@ -21,7 +21,7 @@ struct ContentView: View {
         } detail: {
             Group {
                 switch tab {
-                case 1: ScanView()
+                case 1: ScanConsoleView(onShowResults: { tab = 2 })
                 case 2: ResultsView()
                 case 3: DefinitionsView()
                 case 4: LicensesView()
@@ -30,8 +30,9 @@ struct ContentView: View {
                 default: StatusView()
                 }
             }
-            .padding(28)
+            .padding(tab == 1 ? 0 : 28)
         }
+        .preferredColorScheme(tab == 1 ? .dark : nil)
         .onChange(of: controller.scanRequestID) { _, _ in tab = 1 }
         .onChange(of: controller.state) { _, state in
             if state.hasResults && (!controller.detections.isEmpty || !controller.incompletePaths.isEmpty) { tab = 2 }
@@ -318,114 +319,6 @@ private struct FullDiskAccessView: View {
                 .foregroundStyle(.white)
             Text(text).fixedSize(horizontal: false, vertical: true)
         }
-    }
-}
-
-private struct ScanView: View {
-    @Environment(ScanController.self) private var controller
-
-    var body: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 22) {
-            Text("Malware Scan").font(.largeTitle.bold())
-            HStack {
-                Text(controller.clamVersion).foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    controller.checkFullDiskAccess(showHelpWhenMissing: true)
-                } label: {
-                    Label(controller.hasFullDiskAccess ? "Full Disk Access enabled" : "Full Disk Access needed",
-                          systemImage: controller.hasFullDiskAccess ? "checkmark.shield.fill" : "lock.trianglebadge.exclamationmark")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(controller.hasFullDiskAccess ? .green : .orange)
-                .help("Check Full Disk Access")
-            }
-
-            HStack {
-                ForEach(controller.scanPresets, id: \.0) { preset in
-                    Button("Scan \(preset.0)") { controller.scanPreset(preset.1) }.disabled(!controller.canScan)
-                }
-            }
-            Text("Mode: \(controller.settings.scanMode.rawValue). \(controller.backgroundStatus)")
-                .font(.caption).foregroundStyle(.secondary)
-            if !controller.hasFullDiskAccess {
-                Text("You can scan readable files now. Protected folders may be skipped until Full Disk Access is enabled.")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            GroupBox("Scan target") {
-                HStack {
-                    Image(systemName: controller.selectedURL == nil ? "folder.badge.questionmark" : "folder.fill")
-                        .font(.title2).foregroundStyle(.blue)
-                    Text(controller.selectedURL?.path(percentEncoded: false) ?? "No file or folder selected")
-                        .lineLimit(2).textSelection(.enabled)
-                    Spacer()
-                    Button("Choose…") { controller.chooseTarget() }.disabled(controller.isBusy)
-                }.padding(8)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(controller.state.label).font(.headline)
-                    Spacer()
-                    if controller.state == .scanning {
-                        Group {
-                            if controller.totalFiles > 0 {
-                                Text("\(controller.processedFiles) of \(controller.totalFiles) files")
-                            } else {
-                                Text("Discovering files…")
-                            }
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                }
-                if controller.state == .scanning && controller.totalFiles == 0 {
-                    ProgressView()
-                } else {
-                    ProgressView(value: controller.progress)
-                }
-                HStack {
-                    Text("Elapsed: \(format(controller.elapsed))")
-                    Spacer()
-                    if let eta = controller.estimatedRemaining { Text("About \(format(eta)) remaining") }
-                }.font(.caption).foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Button("Start Scan") { controller.startScan() }
-                    .buttonStyle(.borderedProminent).controlSize(.large).disabled(!controller.canScan)
-                if controller.isBusy {
-                    Button("Cancel") { controller.cancelScan() }.controlSize(.large)
-                }
-                Spacer()
-                SettingsLink { Label("Scan Settings", systemImage: "gearshape") }
-            }
-
-            if !controller.scannerReady {
-                Label("Complete the red readiness checks on the Status screen before scanning.",
-                      systemImage: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-            }
-
-            if !controller.detections.isEmpty {
-                Label("\(controller.detections.count) threat\(controller.detections.count == 1 ? "" : "s") detected", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red).font(.headline)
-            }
-            if controller.state == .finishedWithIssues {
-                Label("The scan completed with errors, skipped files, or incomplete inspections. Open Results for the counts and affected paths.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func format(_ value: TimeInterval) -> String {
-        let seconds = max(Int(value.rounded()), 0)
-        return seconds >= 3600 ? String(format: "%dh %02dm", seconds / 3600, seconds / 60 % 60)
-             : seconds >= 60 ? String(format: "%dm %02ds", seconds / 60, seconds % 60)
-             : "\(seconds)s"
     }
 }
 
