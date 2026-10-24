@@ -1,9 +1,9 @@
-Bundled component: ClamAV 1.5.3 universal macOS runtime
+Bundled component: ClamAV 1.5.4 universal macOS runtime
 Copyright: Cisco Systems, Inc. and ClamAV contributors
 License: GNU General Public License version 2 (see licenses/ClamAV-License.txt)
-Source package: https://github.com/Cisco-Talos/clamav/releases/download/clamav-1.5.3/clamav-1.5.3.macos.universal.pkg
-Published and verified SHA-256: 3d943c37fb7b0ce6b7b79c0422bf39eb014ffb81fa4aa41fa9aa11303ee5acf5
-Source code: https://github.com/Cisco-Talos/clamav/tree/clamav-1.5.3
+Source package: https://github.com/Cisco-Talos/clamav/releases/download/clamav-1.5.4/clamav-1.5.4.macos.universal.pkg
+Published and verified SHA-256: df7fa753e2f9f67f3bc99b2a40a3be7ef559088c68ad6bdf66b4b5764e965bd6
+Source code: https://github.com/Cisco-Talos/clamav/tree/clamav-1.5.4
 
 The executable load paths were extended with @executable_path/../lib so the
 official universal runtime can operate inside the application bundle.

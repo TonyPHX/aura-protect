@@ -6,7 +6,7 @@ OUTPUT_DIR="$ROOT_DIR/outputs"
 APP_DIR="$OUTPUT_DIR/Aura Protect.app"
 
 cd "$ROOT_DIR"
-swift build --disable-sandbox -c release
+swift build --disable-sandbox -c release "$@"
 if [[ -d "$APP_DIR" && "$APP_DIR" == "$OUTPUT_DIR/Aura Protect.app" ]]; then
     rm -rf "$APP_DIR"
 fi
@@ -23,8 +23,10 @@ plutil -insert CFBundleName -string "Aura Protect" "$APP_DIR/Contents/Info.plist
 plutil -insert CFBundleDisplayName -string "Aura Protect" "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundleIconFile -string AuraProtectIcon.icns "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundlePackageType -string APPL "$APP_DIR/Contents/Info.plist"
-plutil -insert CFBundleShortVersionString -string 1.1.8 "$APP_DIR/Contents/Info.plist"
+plutil -insert CFBundleShortVersionString -string 1.1.9 "$APP_DIR/Contents/Info.plist"
 plutil -insert LSMinimumSystemVersion -string 14.0 "$APP_DIR/Contents/Info.plist"
 plutil -insert NSHighResolutionCapable -bool true "$APP_DIR/Contents/Info.plist"
+plutil -insert NSServices -json '[{"NSMenuItem":{"default":"Scan with Aura Protect"},"NSMessage":"scanWithAura","NSPortName":"Aura Protect","NSSendTypes":["public.file-url"],"NSRequiredContext":{}}]' "$APP_DIR/Contents/Info.plist"
+plutil -insert CFBundleDocumentTypes -json '[{"CFBundleTypeName":"Files and folders","CFBundleTypeRole":"Viewer","LSHandlerRank":"Alternate","LSItemContentTypes":["public.data","public.directory"]}]' "$APP_DIR/Contents/Info.plist"
 codesign --force --deep --sign - "$APP_DIR"
 echo "$APP_DIR"

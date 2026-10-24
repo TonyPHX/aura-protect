@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 
 enum EngineUpdater {
+    static let previousEngineKey = "previousManagedClamAVEnginePath"
     static let currentEngineKey = "managedClamAVEnginePath"
 
     struct Release: Sendable {
@@ -23,7 +24,7 @@ enum EngineUpdater {
     }
 
     enum UpdateError: LocalizedError {
-        case releaseLookup, noMacPackage, download, digestMismatch, extraction, incompleteRuntime, signing
+        case releaseLookup, noMacPackage, download, digestMismatch, extraction, incompleteRuntime, signing, publisher
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +34,7 @@ enum EngineUpdater {
             case .digestMismatch: "The engine package failed its published SHA-256 integrity check."
             case .extraction: "The official ClamAV engine package could not be unpacked."
             case .incompleteRuntime: "The downloaded package did not contain the required ClamAV components."
+            case .publisher: "The package publisher could not be verified as Cisco. The installed engine was kept."
             case .signing: "macOS could not prepare the downloaded engine for private app use."
             }
         }
@@ -71,12 +73,13 @@ enum EngineUpdater {
                        packageURL: asset.browser_download_url, digest: digest.lowercased(), assetName: asset.name)
     }
 
-    static func install(release: Release, status: @escaping @Sendable (String) -> Void) async throws -> URL {
+    static func install(release: Release, status: @escaping @Sendable (String) -> Void, supportRoot: URL? = nil) async throws -> URL {
         let manager = FileManager.default
-        let support = manager.homeDirectoryForCurrentUser
+        let support = supportRoot ?? manager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Aura Protect/Engine", isDirectory: true)
         let destination = support.appendingPathComponent("Versions/\(release.version)", isDirectory: true)
-        if manager.isExecutableFile(atPath: destination.appendingPathComponent("bin/clamscan").path) {
+        if manager.fileExists(atPath: destination.path) {
+            guard validateRuntime(destination, expectedVersion: release.version) else { throw UpdateError.incompleteRuntime }
             return destination
         }
         let staging = support.appendingPathComponent("Staging-\(UUID().uuidString)", isDirectory: true)
@@ -95,6 +98,10 @@ enum EngineUpdater {
         status("Verifying the engine package…")
         guard try sha256(of: package) == release.digest else { throw UpdateError.digestMismatch }
 
+        let signature = output("/usr/sbin/pkgutil", ["--check-signature", package.path])
+        guard signature.success, signature.text.contains("Developer ID Installer: Cisco (DE8Y96K9QP)") else {
+            throw UpdateError.publisher
+        }
         status("Preparing the new engine…")
         let expanded = staging.appendingPathComponent("Expanded", isDirectory: true)
         guard run("/usr/sbin/pkgutil", ["--expand-full", package.path, expanded.path]) else {
@@ -135,14 +142,41 @@ enum EngineUpdater {
             }
         }
         try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
+        guard !manager.fileExists(atPath: destination.path) else { throw UpdateError.incompleteRuntime }
         try manager.moveItem(at: prepared, to: destination)
-        let versions = destination.deletingLastPathComponent()
-        for item in (try? manager.contentsOfDirectory(at: versions, includingPropertiesForKeys: nil)) ?? []
-            where item != destination {
-            try? manager.removeItem(at: item)
+        guard validateRuntime(destination, expectedVersion: release.version) else {
+            try? manager.removeItem(at: destination)
+            throw UpdateError.incompleteRuntime
         }
         return destination
+    }
+
+    static func validateRuntime(_ root: URL, expectedVersion: String? = nil) -> Bool {
+        for relative in ["bin/clamscan", "bin/clamdscan", "bin/freshclam", "sbin/clamd"] {
+            let result = output(root.appendingPathComponent(relative).path, ["--help"], library: root.appendingPathComponent("lib").path)
+            guard result.success, !result.text.isEmpty else { return false }
+        }
+        let scanner = output(root.appendingPathComponent("bin/clamscan").path, ["--version"], library: root.appendingPathComponent("lib").path)
+        guard scanner.success, let found = version(from: scanner.text), expectedVersion == nil || found == expectedVersion else { return false }
+        return FileManager.default.fileExists(atPath: root.appendingPathComponent("etc/certs/clamav.crt").path)
+    }
+
+    private static func output(_ executable: String, _ arguments: [String], library: String? = nil) -> (success: Bool, text: String) {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = pipe; process.standardError = pipe
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "C"
+        if let library { environment["DYLD_LIBRARY_PATH"] = library }
+        process.environment = environment
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus == 0, String(decoding: data, as: UTF8.self))
+        } catch { return (false, error.localizedDescription) }
     }
 
     private static func sha256(of url: URL) throws -> String {

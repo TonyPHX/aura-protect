@@ -13,6 +13,8 @@ struct ContentView: View {
                 Label("Scan", systemImage: "shield.checkered").tag(1)
                 Label("Results", systemImage: "doc.text.magnifyingglass").tag(2)
                 Label("Updates", systemImage: "arrow.triangle.2.circlepath").tag(3)
+                Label("Quarantine", systemImage: "lock.shield").tag(5)
+                Label("History", systemImage: "clock").tag(6)
                 Label("About & Licenses", systemImage: "info.circle").tag(4)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
@@ -23,10 +25,16 @@ struct ContentView: View {
                 case 2: ResultsView()
                 case 3: DefinitionsView()
                 case 4: LicensesView()
+                case 5: RecoveryView()
+                case 6: HistoryView()
                 default: StatusView()
                 }
             }
             .padding(28)
+        }
+        .onChange(of: controller.scanRequestID) { _, _ in tab = 1 }
+        .onChange(of: controller.state) { _, state in
+            if state.hasResults && (!controller.detections.isEmpty || !controller.incompletePaths.isEmpty) { tab = 2 }
         }
         .sheet(isPresented: Binding(
             get: { controller.showFullDiskAccessHelp },
@@ -159,12 +167,12 @@ private struct StatusView: View {
             HStack(spacing: 16) {
                 Image(systemName: controller.dashboardReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
                     .font(.system(size: 52))
-                    .foregroundStyle(controller.dashboardReady ? .green : .red)
+                    .foregroundStyle(controller.dashboardReady ? (controller.engineIsCurrent && controller.definitionsAreCurrent ? .green : .orange) : .red)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(controller.dashboardReady ? "Aura Protect Ready" : (controller.scannerReady ? "Performance Attention" : "Action Needed"))
+                    Text(controller.dashboardReady ? (controller.engineIsCurrent && controller.definitionsAreCurrent ? "Aura Protect Ready" : "Ready with Installed Definitions") : (controller.scannerReady ? "Performance Attention" : "Action Needed"))
                         .font(.largeTitle.bold())
                     Text(controller.dashboardReady
-                         ? "Your scanner is ready to provide its highest level of protection."
+                         ? "Scanning is available. Check Updates for engine status and the last successful definition check."
                          : (controller.scannerReady
                             ? "Core scanning is ready, but parallel acceleration needs attention. Safe single-process scanning remains available."
                             : "Resolve the core readiness items below before starting a scan."))
@@ -317,6 +325,7 @@ private struct ScanView: View {
     @Environment(ScanController.self) private var controller
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 22) {
             Text("Malware Scan").font(.largeTitle.bold())
             HStack {
@@ -333,6 +342,17 @@ private struct ScanView: View {
                 .help("Check Full Disk Access")
             }
 
+            HStack {
+                ForEach(controller.scanPresets, id: \.0) { preset in
+                    Button("Scan \(preset.0)") { controller.scanPreset(preset.1) }.disabled(!controller.canScan)
+                }
+            }
+            Text("Mode: \(controller.settings.scanMode.rawValue). \(controller.backgroundStatus)")
+                .font(.caption).foregroundStyle(.secondary)
+            if !controller.hasFullDiskAccess {
+                Text("You can scan readable files now. Protected folders may be skipped until Full Disk Access is enabled.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             GroupBox("Scan target") {
                 HStack {
                     Image(systemName: controller.selectedURL == nil ? "folder.badge.questionmark" : "folder.fill")
@@ -392,11 +412,12 @@ private struct ScanView: View {
                     .foregroundStyle(.red).font(.headline)
             }
             if controller.state == .finishedWithIssues {
-                Label("The scan completed, but ClamAV reported \(controller.summary.errors) error\(controller.summary.errors == 1 ? "" : "s"). Open Results for the affected paths and details.",
+                Label("The scan completed with errors, skipped files, or incomplete inspections. Open Results for the counts and affected paths.",
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
             }
-            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -411,6 +432,7 @@ private struct ScanView: View {
 private struct ResultsView: View {
     @Environment(ScanController.self) private var controller
     @State private var showQuarantineConfirmation = false
+    @State private var confirmKeepFiles = false
     @State private var pendingQuarantinePaths: [String] = []
     var body: some View {
         ScrollView {
@@ -438,7 +460,7 @@ private struct ResultsView: View {
                                 .foregroundStyle(by: .value("Result", item.name))
                         }
                         .chartForegroundStyleScale([
-                            "Clean": Color.green, "Detections": Color.red, "Errors": Color.orange
+                            "Clean": Color.green, "Detections": Color.red, "Errors": Color.orange, "Incomplete": Color.yellow
                         ])
                         .frame(width: 180, height: 180)
 
@@ -447,6 +469,7 @@ private struct ResultsView: View {
                             reportLine("Concerning detections", controller.summary.infectedFiles.formatted(), .red)
                             reportLine("Scan errors", controller.summary.errors.formatted(), .orange)
                             reportLine("Skipped by limits or access", controller.summary.skippedFiles.formatted(), .orange)
+                            reportLine("Incomplete inspection", controller.summary.incompleteFiles.formatted(), .orange)
                             reportLine("Unchanged files reused", controller.summary.reusedFiles.formatted(), .blue)
                             Divider()
                             reportLine("Average throughput", throughput, .blue)
@@ -455,8 +478,18 @@ private struct ResultsView: View {
                         }
                         Spacer()
                     }.padding(8)
-                    Text("Target: \(controller.selectedURL?.path(percentEncoded: false) ?? "Unknown")  •  Engine: \(controller.clamVersion)")
+                    Text("Target: \(controller.scanHistoryTarget)  •  Engine: \(controller.clamVersion)")
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled).padding(.horizontal, 8)
+                }
+            }
+            if !controller.incompletePaths.isEmpty {
+                GroupBox("Files needing further inspection") {
+                    ScrollView {
+                        VStack(alignment: .leading) {
+                            Text("These files reached inspection limits or are encrypted. They are not confirmed clean or confirmed malware.")
+                            ForEach(Array(controller.incompletePaths).sorted(), id: \.self) { Text($0).font(.caption.monospaced()).textSelection(.enabled) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 140)
                 }
             }
             if !controller.detections.isEmpty {
@@ -486,6 +519,9 @@ private struct ResultsView: View {
                                 Label("Show Quarantine Folder", systemImage: "folder")
                             }
                         }
+                        if !controller.resultsReviewed && !controller.unquarantinedDetections.isEmpty {
+                            Button("Keep Remaining Files and Mark Reviewed…") { confirmKeepFiles = true }
+                        }
                         if let status = controller.quarantineStatus {
                             Text(status)
                                 .font(.caption)
@@ -501,7 +537,7 @@ private struct ResultsView: View {
             if !controller.skippedFileDetails.isEmpty {
                 GroupBox("Files not scanned") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("These files were outside the configured size limit or could not be read. The saved report includes the total.")
+                        Text("These files exceeded limits, could not be read, or have unsupported filenames. The saved report includes the total.")
                             .font(.caption).foregroundStyle(.secondary)
                         ScrollView(.vertical) {
                             LazyVStack(alignment: .leading, spacing: 4) {
@@ -534,6 +570,12 @@ private struct ResultsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .alert("Keep remaining detected files?", isPresented: $confirmKeepFiles) {
+            Button("Cancel", role: .cancel) { }
+            Button("Mark Reviewed") { controller.resultsReviewed = true }
+        } message: {
+            Text("The files will stay in place. Only keep files you trust. Waiting background scans may continue after this review.")
+        }
         .alert(remediationTitle, isPresented: $showQuarantineConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Quarantine \(pendingQuarantinePaths.count) File\(pendingQuarantinePaths.count == 1 ? "" : "s")") {
@@ -552,7 +594,7 @@ private struct ResultsView: View {
     private func detectionRow(_ path: String) -> some View {
         let quarantined = controller.quarantinedPaths.contains(path)
         return HStack(spacing: 10) {
-            Label(path, systemImage: quarantined ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
+            Label(path + (controller.detectionNames[path].map { " — " + $0 } ?? ""), systemImage: quarantined ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(quarantined ? Color.secondary : Color.red)
                 .textSelection(.enabled)
             Spacer()
@@ -573,13 +615,14 @@ private struct ResultsView: View {
     }
 
     private var cleanFiles: Int {
-        max(controller.summary.scannedFiles - controller.summary.infectedFiles - controller.summary.errors, 0)
+        max(controller.summary.scannedFiles - controller.summary.infectedFiles - controller.summary.errors - controller.summary.incompleteFiles, 0)
     }
 
     private var scanChartItems: [ScanChartItem] {
         [ScanChartItem(name: "Clean", count: cleanFiles, colorName: "green"),
          ScanChartItem(name: "Detections", count: controller.summary.infectedFiles, colorName: "red"),
-         ScanChartItem(name: "Errors", count: controller.summary.errors, colorName: "orange")]
+         ScanChartItem(name: "Errors", count: controller.summary.errors, colorName: "orange"),
+         ScanChartItem(name: "Incomplete", count: controller.summary.incompleteFiles, colorName: "yellow")]
             .filter { $0.count > 0 }
     }
 
@@ -639,6 +682,10 @@ private struct DefinitionsView: View {
                     .scrollIndicators(.visible)
                     .frame(minHeight: 100, maxHeight: 160)
                 }
+            }
+            if controller.rollbackAvailable {
+                Button("Restore Previous Engine") { controller.rollbackEngine() }
+                    .disabled(controller.isBusy || controller.isUpdating || controller.isUpdatingEngine)
             }
             GroupBox("ClamAV engine") {
                 HStack(spacing: 12) {

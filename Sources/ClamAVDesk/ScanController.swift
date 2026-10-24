@@ -5,7 +5,12 @@ import Observation
 @MainActor
 @Observable
 final class ScanController {
-    var settings = ScanSettings.load() { didSet { settings.save() } }
+    var settings = ScanSettings.load() {
+        didSet {
+            settings.save()
+            configureBackgroundScanning(resetDownloads: oldValue.monitorDownloads != settings.monitorDownloads)
+        }
+    }
     var selectedURL: URL? = FileManager.default.homeDirectoryForCurrentUser
     var state: ScanState = .idle
     var progress = 0.0
@@ -38,12 +43,40 @@ final class ScanController {
     var parallelScannerStatus = "Checking parallel scanner…"
     var isCheckingParallelScanner = false
     var skippedFileDetails: [String] = []
+    var engineUsable = false
+    var resultsReviewed = true
+    private var directScanTargets: [ObjectIdentifier: URL] = [:]
+    var detectionStamps: [String: CleanFileStamp] = [:]
+    var detectionNames: [String: String] = [:]
+    var incompletePaths: Set<String> = []
+    var history: [ScanHistoryEntry] = []
+    var quarantineRecords: [QuarantineRecord] = []
+    var recoveryStatus = ""
+    var backgroundStatus = "Background scans are off."
+    var pendingScanURLs: [URL] = []
+    var scanRequestID = UUID()
+    var scanHistoryTarget = ""
+    var scanWorkers = 1
+    var scanMode: ScanMode = .balanced
+    var backgroundTimer: Timer?
+    var downloadsBaseline: [String: String] = [:]
+    var downloadsPending: [String: String] = [:]
+    var downloadsInitialized = false
+    var finderService: FinderScanService?
+    var scanPresets: [(String, URL)] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [("Downloads", home.appendingPathComponent("Downloads")),
+                ("Desktop", home.appendingPathComponent("Desktop")),
+                ("Applications", URL(fileURLWithPath: "/Applications"))]
+    }
     private var skippedFileCount = 0
 
+    private var scanGeneration = UUID()
     private var scanProcess: Process?
     private var scanProcesses: [Process] = []
     private var daemonProcess: Process?
     private var updateProcess: Process?
+    private var inventoryTask: Task<(ScanPreparation?, String), Never>?
     private var scanTask: Task<Void, Never>?
     private var startTime: Date?
     private var timer: Timer?
@@ -59,16 +92,12 @@ final class ScanController {
     private var definitionRetryCount = 0
     private var activeDaemonConfig: URL?
     private var activeDaemonSettings: ScanSettings?
-    private var incrementalCache: [String: FileStamp] = [:]
+    private var incrementalCache: [String: CleanFileStamp] = [:]
     private var incrementalCacheKey = ""
-    private var pendingCache: [String: FileStamp] = [:]
+    private var preScanStamps: [String: CleanFileStamp] = [:]
+    private var pendingCache: [String: CleanFileStamp] = [:]
     private var reusedFileCount = 0
     private var scanUsesIncrementalCache = false
-
-    private struct FileStamp: Equatable, Sendable {
-        let size: Int64
-        let modified: TimeInterval
-    }
 
     private struct ScanPreparation: Sendable {
         let count: Int
@@ -77,17 +106,24 @@ final class ScanController {
         let skipped: [String]
         let skippedCount: Int
         let reused: Int
+        var stamps: [String: CleanFileStamp] = [:]
     }
 
     private static let lastDefinitionsAttemptKey = "lastDefinitionsAttempt"
     private static let lastDefinitionsSuccessKey = "lastDefinitionsSuccess"
 
-    init() {
+    init(startServices: Bool = true) {
+        guard startServices else { return }
         Self.migrateLegacySupportData()
         loadDefinitionUpdateState()
         refreshSignatureSnapshot()
-        checkFullDiskAccess(showHelpWhenMissing: true)
+        checkFullDiskAccess(showHelpWhenMissing: false)
         scheduleDefinitionUpdates()
+        loadScanHistory()
+        refreshQuarantine()
+        configureBackgroundScanning()
+        finderService = FinderScanService(controller: self)
+        NSApplication.shared.servicesProvider = finderService
         Task {
             await loadVersion()
             checkParallelScannerAvailability()
@@ -96,16 +132,19 @@ final class ScanController {
         }
     }
 
-    var scannerReady: Bool { hasFullDiskAccess && engineIsCurrent && definitionsAreCurrent }
+    var scannerReady: Bool { engineUsable && Self.hasVirusDatabase }
     var dashboardReady: Bool { scannerReady && (!settings.parallelScanning || parallelScannerAvailable) }
-    var canScan: Bool { selectedURL != nil && !isBusy && !isUpdatingEngine && scannerReady }
+    var canScan: Bool { selectedURL != nil && !isBusy && !isUpdatingEngine && !isUpdating && scannerReady }
     var isBusy: Bool { [.counting, .scanning, .cancelling].contains(state) }
 
-    private var effectiveWorkerCount: Int {
+    var effectiveWorkerCount: Int {
+        if settings.scanMode == .quiet { return 1 }
         guard settings.automaticWorkerTuning else { return settings.workerCount }
-        let cores = ProcessInfo.processInfo.activeProcessorCount
-        let memoryGB = max(Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824), 1)
-        return min(max(min(cores / 2, memoryGB / 2), 2), 8)
+        let info = ProcessInfo.processInfo
+        let desired = settings.scanMode.workers(cores: info.activeProcessorCount,
+                                               memoryGB: max(Int(info.physicalMemory / 1_073_741_824), 1))
+        if info.thermalState == .serious || info.thermalState == .critical { return 1 }
+        return info.isLowPowerModeEnabled ? min(desired, 2) : desired
     }
 
     func chooseTarget() {
@@ -144,7 +183,8 @@ final class ScanController {
     }
 
     func startScan() {
-        guard scannerReady else {
+        guard !isBusy else { return }
+        guard !isUpdating, !isUpdatingEngine, scannerReady else {
             fail("Scanner readiness checks are incomplete. Open Status and resolve the red items before scanning.")
             return
         }
@@ -158,31 +198,55 @@ final class ScanController {
         }
         resetScan()
         state = .counting
+        startTime = .now
         log = ""
         var tunedSettings = settings
         tunedSettings.workerCount = tunedSettings.parallelScanning ? effectiveWorkerCount : 1
         let currentSettings = tunedSettings
-        let cacheKey = "\(EngineUpdater.version(from: clamVersion) ?? clamVersion)|\(definitionDatabaseVersion)"
-        if incrementalCacheKey != cacheKey {
-            incrementalCache.removeAll(keepingCapacity: false)
-            incrementalCacheKey = cacheKey
-        }
-        let reusableCache = currentSettings.incrementalScanning ? incrementalCache : [:]
+        scanHistoryTarget = target.path
+        scanWorkers = tunedSettings.workerCount
+        scanMode = tunedSettings.scanMode
+        let installedVersion = clamVersion
+        let previousKey = incrementalCacheKey
+        let previousCache = incrementalCache
         scanUsesIncrementalCache = currentSettings.incrementalScanning
+        let generation = scanGeneration
         scanTask = Task {
-            let preparation = await Task.detached(priority: .userInitiated) {
-                try? Self.prepareScanFileList(at: target, settings: currentSettings, cache: reusableCache)
-            }.value
+            let inventory = Task.detached(priority: currentSettings.scanMode == .quiet ? .utility : .userInitiated) { () -> (ScanPreparation?, String) in
+                let key = currentSettings.incrementalScanning
+                    ? (try? ScanCacheContext.key(engine: executable, version: installedVersion,
+                                                database: Self.databaseDirectory, settings: currentSettings)) ?? UUID().uuidString
+                    : ""
+                let cache = key == previousKey ? previousCache : [:]
+                return (try? Self.prepareScanFileList(at: target, settings: currentSettings, cache: cache), key)
+            }
+            inventoryTask = inventory
+            let result = await inventory.value
+            guard !Task.isCancelled, scanGeneration == generation else {
+                result.0?.fileLists.forEach { try? FileManager.default.removeItem(at: $0) }
+                return
+            }
+            inventoryTask = nil
+            let preparation = result.0
+            let reusableCache = result.1 == previousKey ? previousCache : [:]
+            incrementalCacheKey = result.1
+            if result.1 != previousKey { incrementalCache.removeAll() }
             guard !Task.isCancelled else { return }
             guard let preparation else {
                 fail("Aura Protect could not prepare the file inventory.")
                 return
             }
+            preScanStamps = preparation.stamps
             totalFiles = preparation.count
             skippedFileDetails = preparation.skipped
             skippedFileCount = preparation.skippedCount
             reusedFileCount = preparation.reused
             pendingCache = currentSettings.incrementalScanning ? reusableCache : [:]
+            if preparation.count == 0 {
+                state = .scanning
+                finishScan(exitCode: 0)
+                return
+            }
             if currentSettings.parallelScanning,
                (!preparation.fileLists.isEmpty || !preparation.directFiles.isEmpty),
                let daemon = Self.findExecutable("clamd"),
@@ -202,6 +266,7 @@ final class ScanController {
         guard isBusy else { return }
         state = .cancelling
         scanTask?.cancel()
+        inventoryTask?.cancel()
         scanProcess?.interrupt()
         scanProcesses.forEach { $0.interrupt() }
         daemonProcess?.interrupt()
@@ -215,6 +280,7 @@ final class ScanController {
     }
 
     func shutdown() {
+        backgroundTimer?.invalidate()
         cancelScan()
         stopWarmDaemon()
     }
@@ -229,7 +295,13 @@ final class ScanController {
             if automatic { scheduleDefinitionRetry() }
             return
         }
+        guard !isBusy else {
+            definitionsStatus = "Definition update will retry after the current scan."
+            scheduleDefinitionRetry()
+            return
+        }
         stopWarmDaemon()
+        incrementalCache.removeAll()
         guard let executable = Self.findExecutable("freshclam") else {
             definitionsStatus = "Could not find freshclam"
             recordDefinitionLog("FreshClam executable was not found in the managed, bundled, or supported external engine locations.")
@@ -355,7 +427,7 @@ final class ScanController {
     }
 
     func requestEngineUpdateCheck() {
-        guard !isUpdatingEngine else { return }
+        guard !isUpdatingEngine, !isBusy, !isUpdating else { return }
         Task { await checkForEngineUpdates() }
     }
 
@@ -370,19 +442,20 @@ final class ScanController {
         let completed = (scanCompletedAt ?? Date()).formatted(date: .complete, time: .standard)
         let throughput = summary.duration > 0
             ? "\(Int(Double(summary.scannedFiles) / summary.duration).formatted()) files/sec" : "Unknown"
-        let detectionText = detections.isEmpty ? "None" : detections.map { "- \($0)" }.joined(separator: "\n")
+        let detectionText = detections.isEmpty ? "None" : detections.map { "- \($0)" + (detectionNames[$0].map { " — " + $0 } ?? "") }.joined(separator: "\n")
         let concerns = log.isEmpty ? "None" : log
         let report = """
         AURA PROTECT SCAN REPORT
         =======================
         Completed: \(completed)
-        Target: \(selectedURL?.path(percentEncoded: false) ?? "Unknown")
+        Target: \(scanHistoryTarget)
         Engine: \(clamVersion)
         Protection signatures: \(signatures)
 
         SUMMARY
         Files scanned: \(summary.scannedFiles.formatted())
         Concerning detections: \(summary.infectedFiles.formatted())
+        Incompletely inspected files: \(summary.incompleteFiles)
         Files quarantined by user: \(quarantinedPaths.count.formatted())
         Scan errors: \(summary.errors.formatted())
         Files skipped by limits or access: \(summary.skippedFiles.formatted())
@@ -398,6 +471,9 @@ final class ScanController {
 
         GENUINE SCAN ERRORS
         \(concerns)
+
+        INCOMPLETE INSPECTIONS
+        \(incompletePaths.isEmpty ? "None" : incompletePaths.sorted().joined(separator: "\n"))
 
         FILES NOT SCANNED (first 100)
         \(skippedFileDetails.isEmpty ? "None" : skippedFileDetails.joined(separator: "\n"))
@@ -430,16 +506,22 @@ final class ScanController {
         var moved = 0
         var failures: [String] = []
         for displayedPath in eligiblePaths {
-            let source = Self.resolveDetectionPath(displayedPath)
+            let source = URL(fileURLWithPath: displayedPath)
             guard manager.fileExists(atPath: source.path) else {
                 failures.append("\(displayedPath): file is no longer present")
+                continue
+            }
+            guard let detected = detectionStamps[displayedPath], let current = CleanFileStamp.read(source), detected == current else {
+                failures.append("\(displayedPath): file changed since detection; scan it again before remediation")
                 continue
             }
             let safeName = source.lastPathComponent.replacingOccurrences(of: "/", with: "_")
             let destination = directory.appendingPathComponent("\(UUID().uuidString)-\(safeName).quarantine")
             let metadata = destination.appendingPathExtension("json")
             let record = QuarantineRecord(originalPath: source.path, quarantinedPath: destination.path,
-                                          quarantinedAt: Date(), engineVersion: clamVersion)
+                                          quarantinedAt: Date(), engineVersion: clamVersion,
+                                          detectionName: detectionNames[displayedPath], fileSHA256: current.digest,
+                                          originalPermissions: (try? manager.attributesOfItem(atPath: source.path)[.posixPermissions]) as? Int)
             do {
                 try manager.moveItem(at: source, to: destination)
                 try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
@@ -454,9 +536,13 @@ final class ScanController {
                 quarantinedPaths.insert(displayedPath)
                 moved += 1
             } catch {
+                if manager.fileExists(atPath: destination.path), !manager.fileExists(atPath: source.path) {
+                    try? manager.moveItem(at: destination, to: source)
+                }
                 failures.append("\(displayedPath): \(error.localizedDescription)")
             }
         }
+        refreshQuarantine()
         if failures.isEmpty {
             quarantineStatus = "Quarantined \(moved) file\(moved == 1 ? "" : "s"). Recovery metadata was saved with each file."
         } else {
@@ -486,7 +572,13 @@ final class ScanController {
                 let directory = try await EngineUpdater.install(release: release) { [weak self] status in
                     Task { @MainActor in self?.engineUpdateStatus = status }
                 }
+                if let previous = UserDefaults.standard.string(forKey: EngineUpdater.currentEngineKey), previous != directory.path {
+                    UserDefaults.standard.set(previous, forKey: EngineUpdater.previousEngineKey)
+                } else if UserDefaults.standard.string(forKey: EngineUpdater.currentEngineKey) == nil {
+                    UserDefaults.standard.set("bundled", forKey: EngineUpdater.previousEngineKey)
+                }
                 UserDefaults.standard.set(directory.path, forKey: EngineUpdater.currentEngineKey)
+                incrementalCache.removeAll()
                 engineUpdateStatus = "ClamAV \(release.version) installed and ready."
                 engineIsCurrent = true
                 await loadVersion()
@@ -496,7 +588,7 @@ final class ScanController {
             }
         } catch {
             engineIsCurrent = false
-            engineUpdateStatus = "Engine update check failed: \(error.localizedDescription)"
+            engineUpdateStatus = "Installed engine remains available; update check failed: \(error.localizedDescription)"
         }
         isUpdatingEngine = false
     }
@@ -511,26 +603,12 @@ final class ScanController {
         process.standardError = pipe
         scanProcess = process
         state = .scanning
-        startTime = Date()
         timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshTiming() }
         }
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            let text = String(decoding: data, as: UTF8.self)
-            Task { @MainActor in self?.consume(text) }
-        }
-        do {
-            try process.run()
-        } catch {
-            fail("Unable to start ClamAV: \(error.localizedDescription)")
-            return
-        }
-        Task.detached { [weak self] in
-            process.waitUntilExit()
-            await MainActor.run { self?.finishScan(exitCode: process.terminationStatus) }
-        }
+        do { try process.run() }
+        catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
+        observeScanProcess(process, pipe: pipe)
     }
 
     private func launchInventoryScan(executable: URL, fileLists: [URL], directFiles: [URL], settings: ScanSettings) {
@@ -542,6 +620,7 @@ final class ScanController {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = executable
+        process.qualityOfService = settings.scanMode == .quiet ? .utility : .userInitiated
         Self.configureEnvironment(for: process, executable: executable)
         var arguments = Self.baseScanArguments(settings: settings, databaseDirectory: Self.databaseDirectory)
         arguments.append("--file-list=\(fileList.path)")
@@ -554,21 +633,12 @@ final class ScanController {
         process.standardError = pipe
         scanProcess = process
         state = .scanning
-        startTime = Date()
         timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshTiming() }
         }
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            Task { @MainActor in self?.consume(String(decoding: data, as: UTF8.self)) }
-        }
         do { try process.run() }
         catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
-        Task.detached { [weak self] in
-            process.waitUntilExit()
-            await MainActor.run { self?.finishScan(exitCode: process.terminationStatus) }
-        }
+        observeScanProcess(process, pipe: pipe)
     }
 
     private func launchParallelScan(daemon: URL, client: URL, fileLists: [URL], directFiles: [URL],
@@ -594,6 +664,7 @@ final class ScanController {
         let process = Process()
         let daemonPipe = Pipe()
         process.executableURL = daemon
+        process.qualityOfService = settings.scanMode == .quiet ? .utility : .userInitiated
         Self.configureEnvironment(for: process, executable: daemon)
         process.arguments = ["--foreground", "--config-file=\(daemonFiles.config.path)"]
         if let certificates = Self.certificatesDirectory {
@@ -607,7 +678,10 @@ final class ScanController {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             let text = String(decoding: data, as: UTF8.self)
-            Task { @MainActor in self?.consumeDaemonOutput(text) }
+            Task { @MainActor in
+                guard self?.daemonProcess === process else { return }
+                self?.consumeDaemonOutput(text)
+            }
         }
         do {
             try process.run()
@@ -653,7 +727,6 @@ final class ScanController {
     }
 
     private func launchDaemonClients(executable: URL, config: URL, fileLists: [URL], directFiles: [URL]) {
-        startTime = Date()
         parallelClientsRemaining = fileLists.count + directFiles.count
         parallelExitCode = 0
         timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -666,51 +739,61 @@ final class ScanController {
             let pipe = Pipe()
             let source = ObjectIdentifier(process)
             process.executableURL = executable
+            process.qualityOfService = scanMode == .quiet ? .utility : .userInitiated
             Self.configureEnvironment(for: process, executable: executable)
             if let fileList = client.fileList {
-                process.arguments = ["--stdout", "--verbose", "--wait", "--ping=60:1", "--multiscan",
+                process.arguments = ["--stdout", "--verbose", "--wait", "--ping=60:1",
                                      "--config-file=\(config.path)", "--file-list=\(fileList.path)"]
             } else if let directFile = client.directFile {
                 process.arguments = ["--stdout", "--verbose", "--wait", "--ping=60:1",
                                      "--config-file=\(config.path)",
                                      "--", directFile.path]
             }
+            if let directFile = client.directFile { directScanTargets[source] = directFile }
             process.standardOutput = pipe
             process.standardError = pipe
             scanProcesses.append(process)
-            pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                let text = String(decoding: data, as: UTF8.self)
-                Task { @MainActor in self?.consume(text, source: source) }
-            }
-            do {
-                try process.run()
-            } catch {
-                daemonProcess?.terminate()
+            do { try process.run() }
+            catch {
                 scanProcesses.filter(\.isRunning).forEach { $0.terminate() }
                 fail("Unable to connect to ClamAV’s parallel scanner: \(error.localizedDescription)")
                 return
             }
-            Task.detached { [weak self] in
-                process.waitUntilExit()
-                await MainActor.run {
-                    self?.parallelClientFinished(exitCode: process.terminationStatus,
-                                                 directFile: client.directFile)
-                }
-            }
+            observeScanProcess(process, pipe: pipe, source: source, directFile: client.directFile, parallel: true)
         }
+    }
+
+    /// Drain each pipe in order before recording completion. This also bounds UI work
+    /// and prevents output from a cancelled process leaking into a later scan.
+    private func observeScanProcess(_ process: Process, pipe: Pipe, source: ObjectIdentifier? = nil,
+                                    directFile: URL? = nil, parallel: Bool = false) {
+        let generation = scanGeneration
+        Task.detached { [weak self] in
+            while true {
+                let data = pipe.fileHandleForReading.availableData
+                guard !data.isEmpty else { break }
+                await self?.receiveScanData(String(decoding: data, as: UTF8.self), source: source, generation: generation)
+            }
+            process.waitUntilExit()
+            await self?.scanProcessEnded(process.terminationStatus, directFile: directFile,
+                                         parallel: parallel, generation: generation)
+        }
+    }
+
+    private func receiveScanData(_ text: String, source: ObjectIdentifier?, generation: UUID) {
+        guard scanGeneration == generation, isBusy else { return }
+        consume(text, source: source)
+    }
+
+    private func scanProcessEnded(_ code: Int32, directFile: URL?, parallel: Bool, generation: UUID) {
+        guard scanGeneration == generation, isBusy else { return }
+        if parallel { parallelClientFinished(exitCode: code, directFile: directFile) }
+        else { finishScan(exitCode: code) }
     }
 
     private func parallelClientFinished(exitCode: Int32, directFile: URL?) {
         guard parallelClientsRemaining > 0 else { return }
-        if let directFile {
-            processedFiles += 1
-            if exitCode == 1 {
-                let displayPath = directFile.path.replacingOccurrences(of: "\r", with: "\\r")
-                    .replacingOccurrences(of: "\n", with: "\\n")
-                if !detections.contains(displayPath) { detections.append(displayPath) }
-            }
+        if directFile != nil {
             if exitCode > 1 { scanErrorCount += 1 }
             progress = totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 0.99) : 0
             refreshTiming()
@@ -730,8 +813,12 @@ final class ScanController {
             processedFiles += 1
             updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
-            if let path = OutputParser.infectionPath(line), !detections.contains(path) {
+            if OutputParser.isIncomplete(line) {
+                incompletePaths.insert(source.flatMap { directScanTargets[$0]?.path } ?? OutputParser.resultPath(line) ?? line)
+            } else if let path = (OutputParser.infectionPath(line).map { parsed in source.flatMap { directScanTargets[$0]?.path } ?? parsed }), !detections.contains(path) {
                 detections.append(path)
+                detectionStamps[path] = CleanFileStamp.read(URL(fileURLWithPath: path))
+                detectionNames[path] = line.components(separatedBy: ": ").last?.replacingOccurrences(of: " FOUND", with: "")
             } else if OutputParser.isGenuineError(line) {
                 appendConcern(line)
             }
@@ -751,13 +838,18 @@ final class ScanController {
     }
 
     private func finishScan(exitCode: Int32) {
+        guard isBusy else { return }
         let remainingLines = [outputBuffer] + Array(parallelOutputBuffers.values)
         for line in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
             processedFiles += 1
             updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
-            if let path = OutputParser.infectionPath(line), !detections.contains(path) {
+            if OutputParser.isIncomplete(line) {
+                incompletePaths.insert(OutputParser.resultPath(line) ?? line)
+            } else if let path = OutputParser.infectionPath(line), !detections.contains(path) {
                 detections.append(path)
+                detectionStamps[path] = CleanFileStamp.read(URL(fileURLWithPath: path))
+                detectionNames[path] = line.components(separatedBy: ": ").last?.replacingOccurrences(of: " FOUND", with: "")
             } else if OutputParser.isGenuineError(line) {
                 appendConcern(line)
             }
@@ -783,25 +875,30 @@ final class ScanController {
             log += "\nScan cancelled."
             return
         }
-        if scanUsesIncrementalCache && exitCode <= 1 { incrementalCache = pendingCache }
+        if scanUsesIncrementalCache && exitCode <= 1 && incompletePaths.isEmpty { incrementalCache = pendingCache }
         summary = .init(scannedFiles: processedFiles, infectedFiles: detections.count,
                         errors: max(scanErrorCount, exitCode > 1 ? 1 : 0),
-                        skippedFiles: skippedFileCount, reusedFiles: reusedFileCount, duration: elapsed)
+                        skippedFiles: skippedFileCount, incompleteFiles: incompletePaths.count, reusedFiles: reusedFileCount, duration: elapsed)
         scanCompletedAt = Date()
         progress = 1
-        state = ScanState.completionState(exitCode: exitCode, processedFiles: processedFiles)
+        state = incompletePaths.isEmpty && skippedFileCount == 0 ? ScanState.completionState(exitCode: exitCode, processedFiles: processedFiles) : .finishedWithIssues
+        resultsReviewed = detections.isEmpty
+        if !incompletePaths.isEmpty { appendConcern("Some files could not be fully inspected. Review Files needing further inspection.") }
         if state == .failed && log.isEmpty {
             appendConcern("ClamAV could not complete the scan (exit code \(exitCode)). Review the preceding error details.")
         }
         if log.isEmpty { log = "No genuine scan errors were reported." }
         if settings.bellOnDetection && !detections.isEmpty { NSSound.beep() }
+        saveScanHistory()
     }
 
     private func resetScan() {
+        scanGeneration = UUID()
         scanTask?.cancel()
+        inventoryTask?.cancel()
         timer?.invalidate()
         processedFiles = 0; totalFiles = 0; progress = 0; elapsed = 0
-        estimatedRemaining = nil; detections = []; summary = .init()
+        estimatedRemaining = nil; detections = []; detectionStamps = [:]; detectionNames = [:]; incompletePaths = []; summary = .init()
         scanCompletedAt = nil
         quarantinedPaths = []; quarantineStatus = nil
         outputBuffer = ""
@@ -809,6 +906,7 @@ final class ScanController {
         scanFileListURLs = []
         scanProcesses = []; parallelClientsRemaining = 0; parallelExitCode = 0
         parallelOutputBuffers = [:]
+        directScanTargets = [:]
         scanErrorCount = 0
         daemonOutputBuffer = ""
         skippedFileDetails = []; skippedFileCount = 0; reusedFileCount = 0
@@ -847,14 +945,23 @@ final class ScanController {
             pendingCache.removeValue(forKey: path)
             return
         }
-        let url = URL(fileURLWithPath: path)
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
-        pendingCache[path] = FileStamp(size: Int64(values.fileSize ?? 0),
-                                       modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
+        guard let original = preScanStamps[path],
+              let current = CleanFileStamp.read(URL(fileURLWithPath: path)), current == original else {
+            pendingCache.removeValue(forKey: path)
+            return
+        }
+        pendingCache[path] = current
     }
 
     private func refreshSignatureSnapshot() {
         signatureSnapshot = Self.readSignatureSnapshot()
+    }
+
+    func reloadInstalledEngine() {
+        stopWarmDaemon()
+        incrementalCache.removeAll()
+        engineIsCurrent = false
+        Task { await loadVersion(); checkParallelScannerAvailability() }
     }
 
     private func loadVersion() async {
@@ -868,7 +975,8 @@ final class ScanController {
         do {
             try process.run(); process.waitUntilExit()
             clamVersion = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            definitionsStatus = Self.hasVirusDatabase ? "Definitions installed" : "Definitions need to be downloaded"
+            engineUsable = process.terminationStatus == 0
+            definitionsStatus = Self.hasVirusDatabase ? "Definitions installed. Last successful check: \(lastDefinitionsSuccess?.formatted() ?? "not recorded")." : "Definitions need to be downloaded"
         } catch { clamVersion = "ClamAV unavailable" }
     }
 
@@ -928,7 +1036,7 @@ final class ScanController {
     }
 
     nonisolated static func baseScanArguments(settings: ScanSettings, databaseDirectory: URL? = nil) -> [String] {
-        var result = ["--stdout", "--verbose", "--archive=\(settings.scanArchives ? "yes" : "no")",
+        var result = ["--stdout", "--verbose", "--alert-exceeds-max=yes", "--alert-encrypted=yes", "--max-scantime=120000", "--archive=\(settings.scanArchives ? "yes" : "no")",
                       "--max-filesize=\(settings.maxFileSizeMB)M", "--max-scansize=\(settings.maxFileSizeMB * 4)M"]
         if let databaseDirectory { result.append("--database=\(databaseDirectory.path)") }
         if let certificates = certificatesDirectory { result.append("--cvdcertsdir=\(certificates.path)") }
@@ -978,7 +1086,7 @@ final class ScanController {
     }
 
     nonisolated private static func prepareScanFileList(at target: URL, settings: ScanSettings,
-                                                        cache: [String: FileStamp]) throws -> ScanPreparation {
+                                                        cache: [String: CleanFileStamp]) throws -> ScanPreparation {
         let support = databaseDirectory.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
@@ -994,10 +1102,11 @@ final class ScanController {
         var groupCounts = Array(repeating: 0, count: workerCount)
         var groupBytes = Array(repeating: Int64(0), count: workerCount)
         var regularCount = 0
-        var directFiles: [URL] = []
+        let directFiles: [URL] = []
         var skipped: [String] = []
         var skippedCount = 0
         var reused = 0
+        var stamps: [String: CleanFileStamp] = [:]
         var completed = false
         do {
             for _ in 0..<workerCount {
@@ -1018,18 +1127,19 @@ final class ScanController {
         }
 
         func add(_ url: URL, size: Int64, modified: TimeInterval) throws {
+            if Task.isCancelled { throw CancellationError() }
             if size > Int64(settings.maxFileSizeMB) * 1_048_576 {
                 skippedCount += 1
                 if skipped.count < 100 { skipped.append("Over size limit: \(url.path)") }
                 return
             }
-            let stamp = FileStamp(size: size, modified: modified)
-            if cache[url.path] == stamp {
-                reused += 1
-                return
+            if settings.incrementalScanning, let stamp = CleanFileStamp.read(url) {
+                if cache[url.path] == stamp { reused += 1; return }
+                stamps[url.path] = stamp
             }
             if url.path.contains("\n") || url.path.contains("\r") {
-                directFiles.append(url)
+                skippedCount += 1
+                if skipped.count < 100 { skipped.append("Filename contains a line break; rename before scanning: \(url.path.debugDescription)") }
                 return
             }
             let index = groupBytes.indices.min(by: { groupBytes[$0] < groupBytes[$1] }) ?? 0
@@ -1098,7 +1208,7 @@ final class ScanController {
         completed = true
         return ScanPreparation(count: regularCount + directFiles.count, fileLists: usedLists,
                                directFiles: directFiles, skipped: skipped,
-                               skippedCount: skippedCount, reused: reused)
+                               skippedCount: skippedCount, reused: reused, stamps: stamps)
     }
 
     nonisolated static func lastUsefulLine(_ text: String) -> String? {
@@ -1256,7 +1366,7 @@ final class ScanController {
         let support = database.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        let socket = support.appendingPathComponent("clamd.sock")
+        let socket = support.appendingPathComponent("d-\(UUID().uuidString.prefix(8)).sock")
         let config = support.appendingPathComponent("clamd.conf")
         if FileManager.default.fileExists(atPath: socket.path) {
             try FileManager.default.removeItem(at: socket)
@@ -1268,7 +1378,7 @@ final class ScanController {
             "DatabaseDirectory \(database.path)",
             certificatesDirectory.map { "CVDCertsDirectory \($0.path)" } ?? "",
             "Foreground yes",
-            "MaxThreads \(settings.workerCount)",
+            "MaxThreads \(settings.workerCount + 1)",
             "MaxQueue \(max(settings.workerCount * 20, 100))",
             "ReadTimeout 300",
             "CommandReadTimeout 30",
@@ -1276,7 +1386,10 @@ final class ScanController {
             "FollowDirectorySymlinks \(settings.followSymlinks ? "yes" : "no")",
             "FollowFileSymlinks \(settings.followSymlinks ? "yes" : "no")",
             "MaxFileSize \(settings.maxFileSizeMB)M",
-            "MaxScanSize \(settings.maxFileSizeMB * 4)M"
+            "MaxScanSize \(settings.maxFileSizeMB * 4)M",
+            "AlertExceedsMax yes",
+            "AlertEncrypted yes",
+            "MaxScanTime 120000"
         ]
         if settings.detectPUA { lines.append("DetectPUA yes") }
         if !settings.scanHidden { lines.append("ExcludePath (^|/)\\.[^/]+") }
