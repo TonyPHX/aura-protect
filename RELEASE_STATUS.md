@@ -1,6 +1,6 @@
 # Aura Protect 1.2.1 housekeeping status
 
-Updated November 3, 2026. **Unreleased candidate.** The published release and remote main remain 1.2.0 at `e856d96e31eff0e18a5f01740762ad6f80d5b5f5` at the time of verification.
+Updated November 3, 2026. **Publication in progress.** The published release and remote main remain 1.2.0 at `e856d96e31eff0e18a5f01740762ad6f80d5b5f5` at the time of verification.
 
 ## Completed
 
@@ -19,4 +19,4 @@ Updated November 3, 2026. **Unreleased candidate.** The published release and re
 - Verify remote asset digest, latest-release designation, tag/main relationship, and open PR status.
 - Promote candidate wiki notes to released instructions, update public download links, and add current guide/release-note links to the GitHub release body.
 
-No GitHub 1.2.1 release, tag, or public download is claimed by this status file. The verified local package and candidate source are ready for the publication workflow.
+Publication was authorized on November 3, 2026. Final remote release, tag, asset, and wiki verification will be recorded after publishing.

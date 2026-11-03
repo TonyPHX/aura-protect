@@ -33,7 +33,7 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
-## Aura Protect 1.2.1 development build
+## Aura Protect 1.2.1
 
 Based on the published 1.2.0 source, preserving the graphical console, content-verified reuse, quarantine/recovery, Finder integration, offline readiness, and opt-in background scans.
 
@@ -43,6 +43,8 @@ Based on the published 1.2.0 source, preserving the graphical console, content-v
 - Each batch's returned file count is checked against the inventory. Missing results produce an error instead of a clean completion. Cancellation stops pending batches from launching.
 - ClamAV 1.5.4 remains bundled and was confirmed as the latest stable engine on November 3, 2026. New definition downloads continue through the existing updater.
 - The build script now builds and packages both Mac architectures explicitly.
+
+[Download Aura Protect 1.2.1](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.1).
 
 In targeted local comparisons against 1.2.0, inventory preparation improved by about 49%. A deliberately uneven 1,024-file workload improved from 18.81s to 6.86s with a freshly updated full ClamAV database. These are fixture results, not a guaranteed full-disk speedup. See [PERFORMANCE.md](PERFORMANCE.md) for methodology, limits, and reproducible measurements.
 
