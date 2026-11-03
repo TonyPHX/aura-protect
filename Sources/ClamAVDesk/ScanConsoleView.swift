@@ -204,7 +204,7 @@ struct ScanConsoleView: View {
             HStack {
                 sectionLabel("WORKER QUEUES")
                 Spacer()
-                Text("Observed file completions").font(.caption2).foregroundStyle(ConsoleStyle.muted)
+                Text("Completed / assigned files").font(.caption2).foregroundStyle(ConsoleStyle.muted)
             }
             ScrollView {
                 VStack(spacing: 9) {
@@ -222,7 +222,7 @@ struct ScanConsoleView: View {
                             }
                             .frame(height: 5)
                             .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: worker.fraction)
-                            .help(worker.latestPath ?? "Waiting for a file result")
+                            .help((worker.latestPath ?? "Waiting for a file result") + "\nWorkers receive another batch when ready.")
                             Text(controller.scanWasCancelled ? "Stopped" : controller.state == .cancelling ? "Stopping" : worker.exitCode.map { $0 > 1 ? "Issue" : "Done" } ?? "Scanning")
                                 .font(.caption2).foregroundStyle(worker.exitCode.map { $0 > 1 } == true ? ConsoleStyle.amber : ConsoleStyle.muted)
                                 .frame(width: 48, alignment: .trailing)

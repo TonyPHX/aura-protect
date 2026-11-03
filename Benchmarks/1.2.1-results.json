@@ -1,0 +1,185 @@
+{
+  "date": "2026-11-03",
+  "baseline_version": "1.2.0",
+  "baseline_commit": "e856d96e31eff0e18a5f01740762ad6f80d5b5f5",
+  "candidate_version": "1.2.1",
+  "engine": "1.5.4",
+  "definitions": {
+    "daily": 28173,
+    "main": 63,
+    "bytecode": 339
+  },
+  "scope": "Targeted harmless local fixtures, not a customer full-disk scan. Confirmation run occurred after build tasks completed.",
+  "measurements": {
+    "harmless_signature": {
+      "baseline": "origin/main",
+      "official_database": false,
+      "inventory_seconds": {
+        "baseline": [
+          0.42231202125549316,
+          0.4363729953765869,
+          0.4348520040512085,
+          0.4387320280075073,
+          0.43964993953704834,
+          0.38595402240753174
+        ],
+        "updated": [
+          0.22273004055023193,
+          0.23352301120758057,
+          0.22462797164916992,
+          0.22298896312713623,
+          0.22088897228240967,
+          0.20636796951293945
+        ]
+      },
+      "skewed_matching": [
+        {
+          "policy": "baseline",
+          "trial": 0,
+          "matching_seconds": 3.8201856250000006,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "updated",
+          "trial": 0,
+          "matching_seconds": 1.352299541999999,
+          "files": 1024,
+          "batches": 16
+        },
+        {
+          "policy": "updated",
+          "trial": 1,
+          "matching_seconds": 1.3676546250000001,
+          "files": 1024,
+          "batches": 16
+        },
+        {
+          "policy": "baseline",
+          "trial": 1,
+          "matching_seconds": 3.896773875000001,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "baseline",
+          "trial": 2,
+          "matching_seconds": 3.6500052919999995,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "updated",
+          "trial": 2,
+          "matching_seconds": 1.6017535830000007,
+          "files": 1024,
+          "batches": 16
+        }
+      ]
+    },
+    "full_definitions_initial": {
+      "baseline": "e856d96e31eff0e18a5f01740762ad6f80d5b5f5",
+      "official_database": true,
+      "inventory_seconds": {
+        "baseline": [
+          0.4138540029525757,
+          0.4906289577484131,
+          0.45655906200408936,
+          0.4294229745864868,
+          0.43032097816467285,
+          0.4360579252243042
+        ],
+        "updated": [
+          0.21592605113983154,
+          0.2152010202407837,
+          0.22404694557189941,
+          0.22051799297332764,
+          0.22261393070220947,
+          0.22561204433441162
+        ]
+      },
+      "skewed_matching": [
+        {
+          "policy": "baseline",
+          "trial": 0,
+          "matching_seconds": 18.652218083,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "updated",
+          "trial": 0,
+          "matching_seconds": 6.908358708999998,
+          "files": 1024,
+          "batches": 16
+        },
+        {
+          "policy": "updated",
+          "trial": 1,
+          "matching_seconds": 6.939638166999998,
+          "files": 1024,
+          "batches": 16
+        },
+        {
+          "policy": "baseline",
+          "trial": 1,
+          "matching_seconds": 18.946443708000004,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "baseline",
+          "trial": 2,
+          "matching_seconds": 18.73356466700001,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "updated",
+          "trial": 2,
+          "matching_seconds": 7.014430583000006,
+          "files": 1024,
+          "batches": 16
+        }
+      ]
+    },
+    "full_definitions_confirmation": {
+      "baseline": "e856d96e31eff0e18a5f01740762ad6f80d5b5f5",
+      "official_database": true,
+      "inventory_seconds": {
+        "baseline": [],
+        "updated": []
+      },
+      "skewed_matching": [
+        {
+          "policy": "baseline",
+          "trial": 0,
+          "matching_seconds": 18.872859542,
+          "files": 1024,
+          "batches": 4
+        },
+        {
+          "policy": "updated",
+          "trial": 0,
+          "matching_seconds": 6.8234365,
+          "files": 1024,
+          "batches": 16
+        },
+        {
+          "policy": "updated",
+          "trial": 1,
+          "matching_seconds": 6.892294374999999,
+          "files": 1024,
+          "batches": 16
+        },
+        {
+          "policy": "baseline",
+          "trial": 1,
+          "matching_seconds": 18.748073833999996,
+          "files": 1024,
+          "batches": 4
+        }
+      ]
+    }
+  }
+}

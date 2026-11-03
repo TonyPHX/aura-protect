@@ -59,6 +59,11 @@ struct HistoryView: View {
                             Text("Scanned: \(item.scanned) • Reused: \(item.reused) • Skipped: \(item.skipped) • Incomplete: \(item.incomplete)")
                             Text("\(item.mode.rawValue) • \(item.workers) worker(s) • \(String(format: "%.1f", item.duration)) seconds • \(item.engine)")
                                 .font(.caption).foregroundStyle(.secondary)
+                            if let preparation = item.preparationDuration, let startup = item.startupDuration,
+                               let matching = item.matchingDuration {
+                                Text(String(format: "Preparation %.1fs · Startup %.1fs · Scanning %.1fs", preparation, startup, matching))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             ForEach(item.detections, id: \.self) { path in
                                 Text(path + (item.detectionDetails?[path].map { " — " + $0 } ?? "")).foregroundStyle(.red).textSelection(.enabled)
                             }

@@ -33,6 +33,21 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.1 development build
+
+Based on the published 1.2.0 source, preserving the graphical console, content-verified reuse, quarantine/recovery, Finder integration, offline readiness, and opt-in background scans.
+
+- Large scans use a shared queue of smaller, byte-balanced batches. A worker takes another batch as soon as it finishes, reducing idle time when files have different inspection costs. The number of active workers still follows Quiet/Balanced/Fast and power/thermal limits. Small scans retain one batch per worker.
+- Directory readability is prefetched with file metadata instead of checked separately for every file. Temporary lists are created only for batches that contain files.
+- History and exported reports separate inventory preparation, scanner startup, and file-scanning time. Old history remains readable. Worker lanes show completed versus assigned files; additional batches are assigned while scanning.
+- Each batch's returned file count is checked against the inventory. Missing results produce an error instead of a clean completion. Cancellation stops pending batches from launching.
+- ClamAV 1.5.4 remains bundled and was confirmed as the latest stable engine on November 3, 2026. New definition downloads continue through the existing updater.
+- The build script now builds and packages both Mac architectures explicitly.
+
+In targeted local comparisons against 1.2.0, inventory preparation improved by about 49%. A deliberately uneven 1,024-file workload improved from 18.81s to 6.86s with a freshly updated full ClamAV database. These are fixture results, not a guaranteed full-disk speedup. See [PERFORMANCE.md](PERFORMANCE.md) for methodology, limits, and reproducible measurements.
+
+Run `swift test -c release` with a complete compatible Xcode toolchain. The suite includes a harmless real-engine scan, cancellation, coverage accounting, cache safety, and old-history compatibility. `python3 Scripts/ValidateEngine.py` checks clean files, detections, and archive inspection in isolated storage. Tests do not change the installed app, its definitions, or scan history.
+
 ## Aura Protect 1.2.0 scan console
 
 The Scan screen now uses a native dark science-console design with cyan, amber, and muted violet accents. A segmented ring shows completed files against the known inventory; inventory preparation stays indeterminate until that total is available.
@@ -58,6 +73,6 @@ The app continues to use ad-hoc signing. No Developer ID/notarization or automat
 
 ## Manual performance measurements
 
-Run `python3 Scripts/BenchmarkScanner.py` to compare 1/2/4/8 workers using harmless local fixtures and an isolated daemon. It prints timings, peak daemon memory, and the scratch directory. This is an opt-in developer tool, not a scheduled benchmark or an automated test suite. See [PERFORMANCE.md](PERFORMANCE.md) for results and limits.
+Run `python3 Scripts/BenchmarkScanner.py` to compare 1/2/4/8 workers using harmless local fixtures and an isolated daemon. It prints timings, peak daemon memory, and the scratch directory. This is an opt-in developer benchmark. The regression suite is run separately with `swift test`. See [PERFORMANCE.md](PERFORMANCE.md) for results and limits.
 
 Build options can be passed through to SwiftPM, for example `./build_app.sh --build-system native`. On hosts whose command-line tools lack SwiftUI macros, use a compatible Xcode toolchain or pass the installed matching plugin with `-Xswiftc -load-plugin-library -Xswiftc /path/to/libSwiftUIMacros.dylib`.

@@ -2,6 +2,7 @@
 
 Keep the source, downloadable app, and wiki in sync for each release. This is a manual checklist, not build automation. Aura uses ad-hoc signing; Developer ID signing and notarization are outside this workflow.
 
+0. Verify remote `main`, the latest published release/tag, and the installed application version before choosing a baseline. Do not use an older chat checkout without comparing it with the current source. Preserve the current product features and advance its app version.
 1. Confirm the intended changes are complete and the app version in `build_app.sh` is correct. If the bundled ClamAV runtime changes, update `README.md`, `THIRD_PARTY_NOTICES.md`, `Vendor/ClamAV/NOTICE.txt`, certificates, and applicable upstream license notices together.
 2. Build the intended Mac architectures and record which were actually exercised. Package the app, verify its version and ad-hoc signature, extract the final ZIP, verify it again, and record the ZIP's SHA-256. Document functional validation and its limits without calling an untested path verified.
 3. Merge the reviewed source change into `main`. Confirm the final source tree matches the build and that obsolete PRs are closed without dropping unique work.
@@ -13,3 +14,7 @@ Keep the source, downloadable app, and wiki in sync for each release. This is a 
    - Commit and push the wiki; source-repository commits do not update it automatically.
 6. Link the current user guide and wiki release notes from the GitHub release. Confirm README download/wiki links still work and descriptions reflect the shipped behavior.
 7. Verify remote `main`, release tag, published asset, wiki commit, and open PR status. Report any remaining manual setup or validation limits. Documentation-only follow-ups need not rebuild or retag an unchanged app.
+
+## Candidate work is not a published release
+
+Keep candidate source and wiki notes current during development. Label local/unmerged builds explicitly as unreleased, keep public download links on the published version, and record completed and pending steps in `RELEASE_STATUS.md`. Do not describe release housekeeping as complete while merge, tag, publication, or remote verification is pending. After publication, promote candidate documentation and public links together.
