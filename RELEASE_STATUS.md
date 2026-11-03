@@ -1,22 +1,15 @@
-# Aura Protect 1.2.1 release verification
+# Aura Protect 1.2.2 publication status
 
-Published November 3, 2026. **Release housekeeping completed.**
+Prepared November 3, 2026, from the published 1.2.1 source and documentation closeout (`dac62d82011306cec1f58a97940e1a39e05517a2`). Publication and final remote verification are in progress.
 
-- Release: https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.1
-- Latest published release verified as `v1.2.1`, not a draft or prerelease.
-- Source merged through PR #6; release tag targets `ba37da646b40e29c7eb05c56e51926084f4baad0`.
-- Universal asset: `Aura-Protect-1.2.1-macOS.zip`; uploaded size 34,947,318 bytes.
-- Uploaded asset SHA-256 matches the extracted/verified local package: `9da98888a155dbfb07e5462db4f693be4ad0e29d163a06e0eda8f892dd6e1d9e`.
-- Companion checksum file is uploaded with the release.
-- Release body links the user guide, wiki Release Notes, performance guide, and tagged methodology.
-- Wiki release commit: `5a71557` — Home, Getting Started, Release Notes, scan/console instructions, results/history, troubleshooting, sidebar, and housekeeping promoted to published 1.2.1. Internal links checked.
-- Main/tag executable source matches the tested build. This final status update is documentation-only and does not require rebuilding or retagging.
-- Release PR is merged. The final housekeeping PR is merged as part of publication closeout; no release-related PR is intentionally left open.
+## Validation
 
-## Validation retained from the release build
+- New native Status dashboard: live speed, session average/peak, progress instruments, bounded throughput trace, readiness controls, and result counts.
+- Fifteen tests pass: four dashboard telemetry/range checks plus the eleven existing coverage, cancellation, cache, history and real-engine regressions.
+- Native wide, compact, and idle/partial-access previews rendered and inspected; illustrative preview data is confined to the separate renderer, not the app.
+- Reduce Motion disables needle transitions. The dashboard consumes the existing telemetry samples without an animation timer or fabricated throughput.
+- ClamAV remains 1.5.4; scanner/coverage/quarantine behavior and the 1.2.1 scheduler are preserved.
 
-Eleven regression tests, real-engine/archive checks, optimized arm64/x86_64 builds, and extracted universal ZIP verification passed. Executed on Apple silicon; Intel was cross-compiled. Finder registrations and deep/strict ad-hoc signature were checked. ClamAV remains 1.5.4.
+Final universal package checksum, release tag, published asset, and wiki commit will be recorded after publication. Runtime validation is on Apple silicon; Intel is cross-compiled. Signing remains ad-hoc.
 
-The 1.2.0 console and existing features are preserved. PERFORMANCE.md and Benchmarks/1.2.1-results.json document roughly 49% less preparation time and 64% less matching time on targeted fixtures. These are not full-disk, battery, or Intel runtime guarantees.
-
-The superseded pre-1.2.0 experiment remains saved separately. Existing Windows and other unrelated untracked work was not included. No publication step remains outstanding.
+Verified universal ZIP: `Aura-Protect-1.2.2-macOS.zip`. SHA-256: `472e596a24e8e82cbc51750c6ae97856992a94d3051767528301d54e6316dbeb`. Extracted package version, architectures, Finder registrations, and deep/strict signature checked.

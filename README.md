@@ -33,6 +33,14 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.2 — Status dashboard
+
+The Status page is now a native performance cockpit with three speedometer-style instruments: recent files per second, session-average files per second with a peak-interval reading, and eligible-inventory completion. It also shows a bounded recent-minute throughput trace, file activity, elapsed/estimated remaining time, result counts, scan-client availability, and engine/definition/access controls.
+
+Rates come from observed file completions and monotonic elapsed intervals. The two speed dials share a visible adaptive range. Average speed covers scan-client processing through the last sample and excludes inventory/startup; peak is the highest observed interval across the session. Idle/preparation states have no invented speed, and a stopped scan is labeled. Archived last-session measurements stay distinct from live telemetry. Active clients do not imply CPU utilization.
+
+The graphite/cyan/blue/violet design supports compact windows, readable status distinctions, keyboard buttons, accessibility labels, and Reduce Motion. Rendering uses native SwiftUI/Canvas and the existing bounded telemetry; no animation timer or synthetic activity stream was added. Quarantine, update safeguards, scan coverage, and the 1.2.1 scan scheduler remain unchanged. Fifteen tests cover telemetry and existing scan regressions. Native wide/compact/idle previews use explicitly labeled illustrative figures and are not embedded in the application.
+
 ## Aura Protect 1.2.1
 
 Based on the published 1.2.0 source, preserving the graphical console, content-verified reuse, quarantine/recovery, Finder integration, offline readiness, and opt-in background scans.

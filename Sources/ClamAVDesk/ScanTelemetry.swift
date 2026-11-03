@@ -28,6 +28,11 @@ struct ScanTelemetry: Equatable {
     private var sampledCount = 0
     private var nextSampleID = 0
     var currentRate: Double? { samples.last?.filesPerSecond }
+    private(set) var peakRate: Double?
+    var averageRate: Double? {
+        guard let start = startedAt, let end = sampledAt, end > start else { return nil }
+        return Double(sampledCount) / (end - start)
+    }
 
     mutating func start(queues: [Int], now: TimeInterval) {
         self = .init()
@@ -67,11 +72,27 @@ struct ScanTelemetry: Equatable {
         let interval = now - previous
         guard interval > 0, force || interval >= 1 else { return }
         let rate = Double(max(completed - sampledCount, 0)) / interval
+        peakRate = max(peakRate ?? 0, rate)
         samples.append(.init(id: nextSampleID, seconds: max(now - start, 0), filesPerSecond: rate))
         nextSampleID += 1
         samples.removeAll { $0.seconds < now - start - 60 }
         if samples.count > 61 { samples.removeFirst(samples.count - 61) }
         sampledAt = now
         sampledCount = completed
+    }
+}
+
+/// The dial's numerical range is visible and shared by current/average gauges.
+enum ScanSpeedScale {
+    static func maximum(for peak: Double?) -> Double {
+        guard let peak, peak.isFinite, peak > 10 else { return 10 }
+        let power = pow(10, floor(log10(peak)))
+        for step in [1.0, 2, 5, 10] where step * power >= peak { return step * power }
+        return peak
+    }
+
+    static func fraction(rate: Double?, maximum: Double) -> Double {
+        guard let rate, rate.isFinite, maximum.isFinite, maximum > 0 else { return 0 }
+        return min(max(rate / maximum, 0), 1)
     }
 }
