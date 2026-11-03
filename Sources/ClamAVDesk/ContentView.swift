@@ -27,12 +27,12 @@ struct ContentView: View {
                 case 4: LicensesView()
                 case 5: RecoveryView()
                 case 6: HistoryView()
-                default: StatusView()
+                default: StatusDashboardView(onScan: { tab = 1 }, onUpdates: { tab = 3 }, onResults: { tab = 2 })
                 }
             }
-            .padding(tab == 1 ? 0 : 28)
+            .padding(tab == 0 || tab == 1 ? 0 : 28)
         }
-        .preferredColorScheme(tab == 1 ? .dark : nil)
+        .preferredColorScheme(tab == 0 || tab == 1 ? .dark : nil)
         .onChange(of: controller.scanRequestID) { _, _ in tab = 1 }
         .onChange(of: controller.state) { _, state in
             if state.hasResults && (!controller.detections.isEmpty || !controller.incompletePaths.isEmpty) { tab = 2 }
@@ -156,120 +156,6 @@ private struct LicensesView: View {
     private func revealLicenseFolder() {
         guard let resources = Bundle.main.resourceURL else { return }
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: resources.appendingPathComponent("ClamAV/licenses").path)
-    }
-}
-
-private struct StatusView: View {
-    @Environment(ScanController.self) private var controller
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-            HStack(spacing: 16) {
-                Image(systemName: controller.dashboardReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                    .font(.system(size: 52))
-                    .foregroundStyle(controller.dashboardReady ? (controller.engineIsCurrent && controller.definitionsAreCurrent ? .green : .orange) : .red)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(controller.dashboardReady ? (controller.engineIsCurrent && controller.definitionsAreCurrent ? "Aura Protect Ready" : "Ready with Installed Definitions") : (controller.scannerReady ? "Performance Attention" : "Action Needed"))
-                        .font(.largeTitle.bold())
-                    Text(controller.dashboardReady
-                         ? "Scanning is available. Check Updates for engine status and the last successful definition check."
-                         : (controller.scannerReady
-                            ? "Core scanning is ready, but parallel acceleration needs attention. Safe single-process scanning remains available."
-                            : "Resolve the core readiness items below before starting a scan."))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            readinessRow(title: "Full Disk Access",
-                         detail: controller.hasFullDiskAccess ? "Access to protected files is enabled." : "Protected locations cannot be scanned yet.",
-                         good: controller.hasFullDiskAccess,
-                         working: false,
-                         button: controller.hasFullDiskAccess ? "Check Again" : "Enable…") {
-                if controller.hasFullDiskAccess { controller.checkFullDiskAccess(showHelpWhenMissing: true) }
-                else { controller.showFullDiskAccessHelp = true }
-            }
-
-            readinessRow(title: "ClamAV Engine",
-                         detail: controller.engineUpdateStatus,
-                         good: controller.engineIsCurrent,
-                         working: controller.isUpdatingEngine,
-                         button: "Check Now") {
-                controller.requestEngineUpdateCheck()
-            }
-
-            readinessRow(title: "Virus Definitions",
-                         detail: controller.definitionsStatus,
-                         good: controller.definitionsAreCurrent,
-                         working: controller.isUpdating,
-                         button: "Update Now") {
-                controller.updateDefinitions()
-            }
-
-            readinessRow(title: "Parallel Scan Workers",
-                         detail: controller.settings.parallelScanning
-                            ? controller.parallelScannerStatus
-                            : "Parallel scanning is turned off in Settings; scans use reliable single-process mode.",
-                         good: !controller.settings.parallelScanning || controller.parallelScannerAvailable,
-                         working: controller.isCheckingParallelScanner,
-                         button: "Check Now") {
-                controller.checkParallelScannerAvailability()
-            }
-
-            if let snapshot = controller.signatureSnapshot {
-                GroupBox("Detection coverage") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(snapshot.total.formatted()).font(.title.bold())
-                            Text("signatures covering viruses, trojans, ransomware, and other malware")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        Chart(snapshot.categories) { category in
-                            BarMark(x: .value("Signatures", category.count),
-                                    y: .value("Database", category.name))
-                                .foregroundStyle(by: .value("Database", category.name))
-                                .annotation(position: .trailing) {
-                                    Text(category.count.formatted()).font(.caption).foregroundStyle(.secondary)
-                                }
-                        }
-                        .chartLegend(.hidden)
-                        .chartXAxis { AxisMarks(format: Decimal.FormatStyle().notation(.compactName)) }
-                        .frame(height: 145)
-                        Text("ClamAV groups signatures by database rather than reliably classifying each one as a virus, trojan, or other malware type.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.padding(8)
-                }
-            }
-
-            if controller.scannerReady {
-                Label("Engine, definitions, and protected-file access are all ready.", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.headline)
-            }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func readinessRow(title: String, detail: String, good: Bool, working: Bool,
-                              button: String, action: @escaping () -> Void) -> some View {
-        GroupBox {
-            HStack(spacing: 16) {
-                if working {
-                    ProgressView().controlSize(.small).frame(width: 32, height: 32)
-                } else {
-                    Image(systemName: good ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .font(.title).foregroundStyle(good ? .green : .red)
-                        .frame(width: 32, height: 32)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.headline)
-                    Text(detail).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Spacer()
-                Button(button, action: action).disabled(working || controller.isBusy)
-            }.padding(10)
-        }
     }
 }
 

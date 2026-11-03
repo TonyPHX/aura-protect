@@ -29,7 +29,7 @@ plutil -insert CFBundleName -string "Aura Protect" "$APP_DIR/Contents/Info.plist
 plutil -insert CFBundleDisplayName -string "Aura Protect" "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundleIconFile -string AuraProtectIcon.icns "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundlePackageType -string APPL "$APP_DIR/Contents/Info.plist"
-plutil -insert CFBundleShortVersionString -string 1.2.1 "$APP_DIR/Contents/Info.plist"
+plutil -insert CFBundleShortVersionString -string 1.2.2 "$APP_DIR/Contents/Info.plist"
 plutil -insert LSMinimumSystemVersion -string 14.0 "$APP_DIR/Contents/Info.plist"
 plutil -insert NSHighResolutionCapable -bool true "$APP_DIR/Contents/Info.plist"
 plutil -insert NSServices -json '[{"NSMenuItem":{"default":"Scan with Aura Protect"},"NSMessage":"scanWithAura","NSPortName":"Aura Protect","NSSendTypes":["public.file-url"],"NSRequiredContext":{}}]' "$APP_DIR/Contents/Info.plist"
