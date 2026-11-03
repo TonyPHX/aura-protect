@@ -100,6 +100,9 @@ struct ScanSummary: Equatable {
     var incompleteFiles = 0
     var reusedFiles = 0
     var duration: TimeInterval = 0
+    var preparationDuration: TimeInterval = 0
+    var startupDuration: TimeInterval = 0
+    var matchingDuration: TimeInterval = 0
 }
 
 struct SignatureCategory: Codable, Equatable, Identifiable {
@@ -146,6 +149,9 @@ struct ScanHistoryEntry: Codable, Identifiable {
     let workers: Int
     let engine: String
     var detectionDetails: [String: String]? = nil
+    var preparationDuration: TimeInterval? = nil
+    var startupDuration: TimeInterval? = nil
+    var matchingDuration: TimeInterval? = nil
 }
 
 enum OutputParser {

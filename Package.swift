@@ -5,5 +5,6 @@ let package = Package(
     name: "ClamAVDesk",
     platforms: [.macOS(.v14)],
     products: [.executable(name: "ClamAVDesk", targets: ["ClamAVDesk"])],
-    targets: [.executableTarget(name: "ClamAVDesk")]
+    targets: [.executableTarget(name: "ClamAVDesk"),
+              .testTarget(name: "ClamAVDeskTests", dependencies: ["ClamAVDesk"])]
 )

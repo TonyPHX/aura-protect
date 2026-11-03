@@ -24,7 +24,9 @@ extension ScanController {
         history.insert(.init(id: UUID(), date: .now, target: scanHistoryTarget, scanned: summary.scannedFiles,
                              reused: summary.reusedFiles, skipped: summary.skippedFiles,
                              incomplete: summary.incompleteFiles, detections: detections,
-                             duration: summary.duration, mode: scanMode, workers: scanWorkers, engine: clamVersion, detectionDetails: detectionNames), at: 0)
+                             duration: summary.duration, mode: scanMode, workers: scanWorkers, engine: clamVersion, detectionDetails: detectionNames,
+                             preparationDuration: summary.preparationDuration, startupDuration: summary.startupDuration,
+                             matchingDuration: summary.matchingDuration), at: 0)
         history = Array(history.prefix(100))
         do {
             try JSONEncoder().encode(history).write(to: Self.historyURL, options: .atomic)

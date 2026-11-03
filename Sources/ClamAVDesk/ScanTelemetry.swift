@@ -2,10 +2,11 @@ import Foundation
 
 struct ScanWorkerActivity: Identifiable, Equatable {
     let id: Int
-    let queued: Int
+    var queued: Int
     var completed = 0
     var latestPath: String?
     var exitCode: Int32?
+    var worstExitCode: Int32 = 0
     var fraction: Double { queued > 0 ? min(Double(completed) / Double(queued), 1) : 0 }
 }
 
@@ -43,9 +44,21 @@ struct ScanTelemetry: Equatable {
         if completed { workers[worker].completed += 1 }
     }
 
+    mutating func assign(files: Int, to worker: Int) {
+        guard workers.indices.contains(worker) else { return }
+        workers[worker].queued += files
+        workers[worker].exitCode = nil
+    }
+
+    mutating func recordExit(worker: Int, code: Int32) {
+        guard workers.indices.contains(worker) else { return }
+        workers[worker].worstExitCode = max(workers[worker].worstExitCode, code)
+    }
+
     mutating func finishWorker(_ worker: Int, code: Int32) {
         guard workers.indices.contains(worker) else { return }
-        workers[worker].exitCode = code
+        recordExit(worker: worker, code: code)
+        workers[worker].exitCode = workers[worker].worstExitCode
         latestPathIsCurrent = false
     }
 
