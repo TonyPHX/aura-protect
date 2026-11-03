@@ -35,9 +35,11 @@ Aura Protect is an independent community project and is not affiliated with, spo
 
 ## Aura Protect 1.2.2 — Status dashboard
 
+[Download 1.2.2](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.2) · [Status dashboard guide and native preview](https://github.com/TonyPHX/aura-protect/wiki/Status-Dashboard)
+
 The Status page is now a native performance cockpit with three speedometer-style instruments: recent files per second, session-average files per second with a peak-interval reading, and eligible-inventory completion. It also shows a bounded recent-minute throughput trace, file activity, elapsed/estimated remaining time, result counts, scan-client availability, and engine/definition/access controls.
 
-Rates come from observed file completions and monotonic elapsed intervals. The two speed dials share a visible adaptive range. Average speed covers scan-client processing through the last sample and excludes inventory/startup; peak is the highest observed interval across the session. Idle/preparation states have no invented speed, and a stopped scan is labeled. Archived last-session measurements stay distinct from live telemetry. Active clients do not imply CPU utilization.
+Rates come from observed file completions and monotonic elapsed intervals. The two speed dials share a visible adaptive range. Average speed covers scan-client processing through the last sample and excludes inventory/startup; peak is the highest observed interval across the session. Idle/preparation states have no invented speed, and a stopped scan is labeled. Retained last-session measurements stay distinct from live telemetry. Active clients do not imply CPU utilization.
 
 The graphite/cyan/blue/violet design supports compact windows, readable status distinctions, keyboard buttons, accessibility labels, and Reduce Motion. Rendering uses native SwiftUI/Canvas and the existing bounded telemetry; no animation timer or synthetic activity stream was added. Quarantine, update safeguards, scan coverage, and the 1.2.1 scan scheduler remain unchanged. Fifteen tests cover telemetry and existing scan regressions. Native wide/compact/idle previews use explicitly labeled illustrative figures and are not embedded in the application.
 
