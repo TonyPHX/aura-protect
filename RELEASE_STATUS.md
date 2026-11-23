@@ -1,4 +1,4 @@
-# Aura Protect 1.2.3 local candidate
+# Aura Protect 1.2.3 release verification
 
 The macOS candidate bundles ClamAV 1.5.5. The installer SHA-256 matched the
 checksum in Cisco-Talos's GitHub release metadata. macOS reported an invalid
@@ -14,7 +14,13 @@ inspection, and archive opt-out. Fifteen Swift tests passed. The parallel
 daemon integration test is pending because this session could not bind the
 daemon's Unix socket.
 
-This candidate has not been published.
+Published November 22, 2026. [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.3).
+The release tag targets source commit `5771c6e`. The uploaded universal ZIP
+matched the verified local ZIP SHA-256
+`2c93ba735b0906939017d03b0ff55fbc4d49176e518f6e0d26ea004b2a5cb845`.
+The companion checksum file is published. Wiki commit `353cb4f` updates
+Home, Getting Started, Release Notes, Results and Quarantine, and Engine and
+Definition Updates.
 
 # Aura Protect 1.2.2 release verification
 
