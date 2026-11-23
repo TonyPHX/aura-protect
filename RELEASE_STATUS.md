@@ -1,3 +1,12 @@
+# Aura Protect 1.2.4 release verification
+
+Published November 22, 2026. [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.4).
+
+- Tag v1.2.4 points to source commit `92d26a1`.
+- The uploaded universal macOS ZIP matches the locally verified SHA-256 `536c88df68d3b60c67fc1def2e0567c0a608e7e4c12ceb76234bc48abaa9edc7`. The extracted app passed deep, strict signature verification for both architectures and reported ClamAV 1.5.5.
+- Sixteen tests passed, including a real-engine check that a file result arrives before the scan input closes. The daemon integration test could not start because the environment blocked its Unix socket.
+- Wiki commit `fa12d21` documents the release, streaming discovery, and the updated console behavior.
+
 # Aura Protect 1.2.3 release verification
 
 The macOS candidate bundles ClamAV 1.5.5. The installer SHA-256 matched the
