@@ -150,9 +150,13 @@ struct ScanConsoleView: View {
             SegmentedScanRing(fraction: controller.scanFraction, color: accent)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: controller.scanFraction)
             VStack(spacing: 7) {
-                if controller.state == .counting {
+                if controller.state == .counting || controller.discoveringFiles {
                     ProgressView().controlSize(.small).padding(6)
-                    Text("Inventory").font(.title2.weight(.medium))
+                    Text(controller.state == .scanning ? controller.processedFiles.formatted() : "Inventory")
+                        .font(.title2.weight(.medium)).monospacedDigit()
+                    if controller.state == .scanning {
+                        Text("Discovering files").font(.caption).foregroundStyle(ConsoleStyle.muted)
+                    }
                 } else if controller.totalFiles > 0 {
                     Text("\(Int(controller.scanFraction * 100))%")
                         .font(.system(size: 57, weight: .medium, design: .rounded)).monospacedDigit()
@@ -173,7 +177,7 @@ struct ScanConsoleView: View {
         .frame(width: 250, height: 250)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Scan progress")
-        .accessibilityValue(controller.state == .counting ? "Preparing inventory; total unknown" : "\(controller.processedFiles) of \(controller.totalFiles) files completed. \(controller.state.label)")
+        .accessibilityValue(controller.discoveringFiles || controller.state == .counting ? "\(controller.processedFiles) files completed. Discovery in progress." : "\(controller.processedFiles) of \(controller.totalFiles) files completed. \(controller.state.label)")
     }
 
     private var telemetryPanel: some View {

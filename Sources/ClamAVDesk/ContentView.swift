@@ -50,6 +50,19 @@ struct ContentView: View {
 private struct LicensesView: View {
     @Environment(ScanController.self) private var controller
 
+    private var flagReveal: Double {
+        switch controller.state {
+        case .counting, .scanning:
+            let completed = Double(controller.processedFiles)
+            let discoveryReveal = 0.1 + 0.25 * completed / (completed + 500)
+            return max(discoveryReveal, min(controller.scanFraction, 0.98))
+        case .finished, .finishedWithIssues:
+            return 1
+        case .idle, .cancelling, .failed:
+            return 0
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -96,6 +109,11 @@ private struct LicensesView: View {
                         Text("ClamAV includes components maintained by other open-source projects. Their notices are preserved in the application bundle and in the Aura Protect source repository.")
                         Button("Show bundled license notices") { revealLicenseFolder() }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                }
+                if flagReveal > 0 {
+                    ScanCompletionFlag(reveal: flagReveal)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

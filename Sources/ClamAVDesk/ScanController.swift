@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Observation
 
@@ -28,7 +29,7 @@ final class ScanController {
     var liveScanErrors: Int { max(scanErrorCount, summary.errors, state == .failed ? 1 : 0) }
     var liveSkippedFiles: Int { skippedFileCount }
     var liveReusedFiles: Int { reusedFileCount }
-    var scanFraction: Double { totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 1) : 0 }
+    var scanFraction: Double { !discoveringFiles && totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 1) : 0 }
     var definitionsStatus = "Not checked"
     var isUpdating = false
     var clamVersion = "Checking…"
@@ -85,7 +86,10 @@ final class ScanController {
     private var scanProcesses: [Process] = []
     private var daemonProcess: Process?
     private var updateProcess: Process?
-    private var inventoryTask: Task<(ScanPreparation?, String), Never>?
+    var discoveringFiles = false
+    private var streamingInventory = false
+    private var beginInventoryFeed: (([URL]) -> Void)?
+    private var inventoryTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var startTime: Date?
     private var inventoryFinishedAt: Date?
@@ -234,59 +238,90 @@ final class ScanController {
         let previousCache = incrementalCache
         scanUsesIncrementalCache = currentSettings.incrementalScanning
         let generation = scanGeneration
-        scanTask = Task {
-            let inventory = Task.detached(priority: currentSettings.scanMode == .quiet ? .utility : .userInitiated) { () -> (ScanPreparation?, String) in
+        let daemon = currentSettings.parallelScanning ? Self.findExecutable("clamd") : nil
+        let client = currentSettings.parallelScanning ? Self.findExecutable("clamdscan") : nil
+        let pipeCount = daemon != nil && client != nil ? scanWorkers : 1
+        do {
+            let support = Self.databaseDirectory.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            for _ in 0..<pipeCount {
+                let input = support.appendingPathComponent("scan-input-\(UUID().uuidString)")
+                guard mkfifo(input.path, 0o600) == 0 else { throw POSIXError(.EIO) }
+                scanFileListURLs.append(input)
+            }
+        } catch {
+            scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+            scanFileListURLs = []
+            fail("Aura Protect could not create the scanner input stream.")
+            return
+        }
+
+        discoveringFiles = true
+        streamingInventory = true
+        beginInventoryFeed = { [weak self] inputs in
+            guard let self else { return }
+            self.beginInventoryFeed = nil
+            self.inventoryTask = Task.detached(priority: currentSettings.scanMode == .quiet ? .utility : .userInitiated) { [weak self] in
+                let pipes = inputs.map(ScanInputPipe.init(url:))
+                defer { pipes.forEach { $0.closeWriter() } }
                 let key = currentSettings.incrementalScanning
                     ? (try? ScanCacheContext.key(engine: executable, version: installedVersion,
                                                 database: Self.databaseDirectory, settings: currentSettings)) ?? UUID().uuidString
                     : ""
                 let cache = key == previousKey ? previousCache : [:]
-                return (try? Self.prepareScanFileList(at: target, settings: currentSettings, cache: cache), key)
-            }
-            inventoryTask = inventory
-            let result = await inventory.value
-            guard !Task.isCancelled, scanGeneration == generation else {
-                result.0?.fileLists.forEach { try? FileManager.default.removeItem(at: $0) }
-                return
-            }
-            inventoryTask = nil
-            inventoryFinishedAt = .now
-            preparationDuration = max(Date().timeIntervalSince(startTime ?? .now), 0)
-            let preparation = result.0
-            let reusableCache = result.1 == previousKey ? previousCache : [:]
-            incrementalCacheKey = result.1
-            if result.1 != previousKey { incrementalCache.removeAll() }
-            guard !Task.isCancelled else { return }
-            guard let preparation else {
-                fail("Aura Protect could not prepare the file inventory.")
-                return
-            }
-            preScanStamps = preparation.stamps
-            queueFileCounts = preparation.queueCounts
-            totalFiles = preparation.count
-            skippedFileDetails = preparation.skipped
-            skippedFileCount = preparation.skippedCount
-            reusedFileCount = preparation.reused
-            pendingCache = currentSettings.incrementalScanning ? reusableCache : [:]
-            scanFileListURLs = preparation.fileLists
-            if preparation.count == 0 {
-                scanWorkers = 0
-                state = .scanning
-                finishScan(exitCode: 0)
-                return
-            }
-            if currentSettings.parallelScanning,
-               (!preparation.fileLists.isEmpty || !preparation.directFiles.isEmpty),
-               let daemon = Self.findExecutable("clamd"),
-                let client = Self.findExecutable("clamdscan") {
-                launchParallelScan(daemon: daemon, client: client, fileLists: preparation.fileLists,
-                                   directFiles: preparation.directFiles, fallbackScanner: executable,
-                                   target: target, settings: currentSettings)
-            } else {
-                launchInventoryScan(executable: executable, fileLists: preparation.fileLists,
-                                    directFiles: preparation.directFiles, settings: currentSettings)
+                await self?.initializeStreamingCache(key: key, cache: cache, generation: generation)
+                do {
+                    for pipe in pipes { try pipe.openWriter() }
+                    var next = 0
+                    let result = try Self.prepareScanFileList(at: target, settings: currentSettings, cache: cache,
+                        stream: { data, path, stamp in
+                            if let stamp {
+                                DispatchQueue.main.sync { [weak self] in
+                                    MainActor.assumeIsolated {
+                                        if self?.scanGeneration == generation { self?.preScanStamps[path] = stamp }
+                                    }
+                                }
+                            }
+                            try pipes[next].writePaths(data)
+                            next = (next + 1) % pipes.count
+                        })
+                    await self?.completeDiscovery(result, generation: generation)
+                } catch {
+                    await self?.completeDiscovery(nil, generation: generation)
+                }
             }
         }
+        if let daemon, let client {
+            launchParallelScan(daemon: daemon, client: client, fileLists: scanFileListURLs,
+                               directFiles: [], fallbackScanner: executable, target: target, settings: currentSettings)
+        } else {
+            launchInventoryScan(executable: executable, fileLists: scanFileListURLs, directFiles: [], settings: currentSettings)
+        }
+    }
+
+    private func initializeStreamingCache(key: String, cache: [String: CleanFileStamp], generation: UUID) {
+        guard scanGeneration == generation, state == .scanning else { return }
+        if incrementalCacheKey != key { incrementalCache.removeAll() }
+        incrementalCacheKey = key
+        pendingCache = cache
+    }
+
+    private func completeDiscovery(_ result: ScanPreparation?, generation: UUID) {
+        guard scanGeneration == generation, state == .scanning else { return }
+        discoveringFiles = false
+        inventoryFinishedAt = .now
+        preparationDuration = max(Date().timeIntervalSince(startTime ?? .now) - startupDuration, 0)
+        if let result {
+            totalFiles = result.count
+            skippedFileDetails = result.skipped
+            skippedFileCount = result.skippedCount
+            reusedFileCount = result.reused
+        } else {
+            scanErrorCount += 1
+            appendConcern("Scanner input ended before discovery completed. Scan coverage could not be confirmed.")
+        }
+        refreshTiming()
     }
 
     func cancelScan() {
@@ -488,7 +523,7 @@ final class ScanController {
         Files skipped by limits or access: \(summary.skippedFiles.formatted())
         Unchanged clean files reused: \(summary.reusedFiles.formatted())
         Duration: \(String(format: "%.1f seconds", summary.duration))
-        Inventory preparation: \(String(format: "%.1f seconds", summary.preparationDuration))
+        Inventory discovery (may overlap scanning): \(String(format: "%.1f seconds", summary.preparationDuration))
         Scanner startup: \(String(format: "%.1f seconds", summary.startupDuration))
         File scanning: \(String(format: "%.1f seconds", summary.matchingDuration))
         Average throughput: \(throughput)
@@ -643,15 +678,15 @@ final class ScanController {
     }
 
     private func launchInventoryScan(executable: URL, fileLists: [URL], directFiles: [URL], settings: ScanSettings) {
-        startupDuration = max(Date().timeIntervalSince(inventoryFinishedAt ?? .now), 0)
+        startupDuration = max(Date().timeIntervalSince((streamingInventory ? startTime : inventoryFinishedAt) ?? .now), 0)
         scanWorkers = 1
         telemetryWorkers = [:]
         scanTelemetry.start(queues: [totalFiles], now: ProcessInfo.processInfo.systemUptime)
-        guard let fileList = try? Self.consolidateScanFileLists(fileLists) else {
+        guard let fileList = streamingInventory ? fileLists.first : try? Self.consolidateScanFileLists(fileLists) else {
             fail("Aura Protect could not prepare the scanner input list.")
             return
         }
-        scanFileListURLs.append(fileList)
+        if !streamingInventory { scanFileListURLs.append(fileList) }
         let process = Process()
         let pipe = Pipe()
         process.executableURL = executable
@@ -671,6 +706,7 @@ final class ScanController {
         do { try process.run() }
         catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
         observeScanProcess(process, pipe: pipe)
+        beginInventoryFeed?([fileList])
     }
 
     private func launchParallelScan(daemon: URL, client: URL, fileLists: [URL], directFiles: [URL],
@@ -719,7 +755,8 @@ final class ScanController {
         do {
             try process.run()
         } catch {
-            fail("Unable to start ClamAV’s parallel scanner: \(error.localizedDescription)")
+            fallbackToSingleScan(executable: fallbackScanner, fileLists: fileLists,
+                                 directFiles: directFiles, settings: settings)
             return
         }
 
@@ -729,6 +766,7 @@ final class ScanController {
                 let ready = await Task.detached(priority: .userInitiated) {
                     Self.daemonResponds(client: client, config: daemonFiles.config)
                 }.value
+                guard !Task.isCancelled, self.state == .scanning else { return }
                 if ready {
                     self.activeDaemonConfig = daemonFiles.config
                     self.activeDaemonSettings = settings
@@ -761,7 +799,7 @@ final class ScanController {
 
     func launchDaemonClients(executable: URL, config: URL, fileLists: [URL], directFiles: [URL], queueCounts: [URL: Int]) {
         queueFileCounts = queueCounts
-        startupDuration = max(Date().timeIntervalSince(inventoryFinishedAt ?? .now), 0)
+        startupDuration = max(Date().timeIntervalSince((streamingInventory ? startTime : inventoryFinishedAt) ?? .now), 0)
         // Line-break filenames are excluded during inventory, so all parallel work is list-based.
         let workerCount = min(scanWorkers, fileLists.count)
         scanWorkers = workerCount
@@ -774,8 +812,9 @@ final class ScanController {
         parallelClientConfig = config
         batchQueue.reset(fileLists)
         for worker in 0..<workerCount {
-            guard launchNextBatch(worker: worker) else { break }
+            guard launchNextBatch(worker: worker) else { return }
         }
+        beginInventoryFeed?(fileLists)
     }
 
     @discardableResult
@@ -837,6 +876,14 @@ final class ScanController {
             consume("\n", source: source)
         }
         var completionCode = code
+        if discoveringFiles && state == .scanning {
+            discoveringFiles = false
+            inventoryTask?.cancel()
+            scanProcesses.filter(\.isRunning).forEach { $0.terminate() }
+            scanErrorCount += 1
+            appendConcern("The scanner exited before discovery completed. Scan coverage could not be confirmed.")
+            completionCode = 2
+        }
         if let source, code <= 1, let expected = batchExpectedCounts[source], expected > 0,
            batchCompletedCounts[source, default: 0] != expected, state == .scanning {
             appendConcern("A scanner batch reported \(batchCompletedCounts[source, default: 0]) of \(expected) expected file results. Coverage could not be confirmed.")
@@ -886,7 +933,9 @@ final class ScanController {
             processedFiles += 1
             if let source { batchCompletedCounts[source, default: 0] += 1 }
             if let path = OutputParser.resultPath(line) {
-                scanTelemetry.report(path: path, worker: source.flatMap { telemetryWorkers[$0] } ?? 0, completed: true)
+                let worker = source.flatMap { telemetryWorkers[$0] } ?? 0
+                if streamingInventory { scanTelemetry.assign(files: 1, to: worker) }
+                scanTelemetry.report(path: path, worker: worker, completed: true)
                 updateIncrementalCache(path: path, from: line)
             }
             if line.contains(" ERROR") { scanErrorCount += 1 }
@@ -925,7 +974,7 @@ final class ScanController {
         if state == .scanning {
             scanTelemetry.sample(completed: processedFiles, now: ProcessInfo.processInfo.systemUptime)
         }
-        guard processedFiles > 0, totalFiles > processedFiles else { estimatedRemaining = nil; return }
+        guard !discoveringFiles, processedFiles > 0, totalFiles > processedFiles else { estimatedRemaining = nil; return }
         estimatedRemaining = elapsed / Double(processedFiles) * Double(totalFiles - processedFiles)
     }
 
@@ -971,21 +1020,29 @@ final class ScanController {
         }
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
         scanFileListURLs = []
+        discoveringFiles = false
+        beginInventoryFeed = nil
         if state == .cancelling {
             scanWasCancelled = true
             state = .idle
             log += "\nScan cancelled."
             return
         }
-        if scanUsesIncrementalCache && exitCode <= 1 && incompletePaths.isEmpty { incrementalCache = pendingCache }
+        var finalCode = exitCode
+        if streamingInventory && scanErrorCount == 0 && processedFiles != totalFiles && exitCode <= 1 {
+            scanErrorCount += 1
+            appendConcern("The scanner reported \(processedFiles) of \(totalFiles) expected file results. Scan coverage could not be confirmed.")
+        }
+        if streamingInventory && scanErrorCount > 0 { finalCode = max(finalCode, 2) }
+        if scanUsesIncrementalCache && finalCode <= 1 && incompletePaths.isEmpty { incrementalCache = pendingCache }
         summary = .init(scannedFiles: processedFiles, infectedFiles: detections.count,
-                        errors: max(scanErrorCount, exitCode > 1 ? 1 : 0),
+                        errors: max(scanErrorCount, finalCode > 1 ? 1 : 0),
                         skippedFiles: skippedFileCount, incompleteFiles: incompletePaths.count, reusedFiles: reusedFileCount, duration: elapsed,
                         preparationDuration: preparationDuration, startupDuration: startupDuration,
-                        matchingDuration: max(elapsed - preparationDuration - startupDuration, 0))
+                        matchingDuration: max(elapsed - startupDuration - (streamingInventory ? 0 : preparationDuration), 0))
         scanCompletedAt = Date()
         progress = 1
-        state = incompletePaths.isEmpty && skippedFileCount == 0 ? ScanState.completionState(exitCode: exitCode, processedFiles: processedFiles) : .finishedWithIssues
+        state = incompletePaths.isEmpty && skippedFileCount == 0 ? ScanState.completionState(exitCode: finalCode, processedFiles: processedFiles) : .finishedWithIssues
         resultsReviewed = detections.isEmpty
         if !incompletePaths.isEmpty { appendConcern("Some files could not be fully inspected. Review Files needing further inspection.") }
         if state == .failed && log.isEmpty {
@@ -998,6 +1055,7 @@ final class ScanController {
 
     private func resetScan() {
         scanGeneration = UUID()
+        discoveringFiles = false; streamingInventory = false; beginInventoryFeed = nil
         scanTelemetry = .init()
         scanWasCancelled = false
         telemetryWorkers = [:]
@@ -1029,6 +1087,11 @@ final class ScanController {
         for worker in scanTelemetry.workers where worker.exitCode == nil { scanTelemetry.finishWorker(worker.id, code: 2) }
         scanTelemetry.latestPathIsCurrent = false
         timer?.invalidate(); timer = nil
+        inventoryTask?.cancel()
+        discoveringFiles = false
+        beginInventoryFeed = nil
+        scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+        scanFileListURLs = []
         state = .failed; log = message
     }
 
@@ -1213,7 +1276,8 @@ final class ScanController {
     }
 
     nonisolated static func prepareScanFileList(at target: URL, settings: ScanSettings,
-                                                cache: [String: CleanFileStamp], inventoryDirectory: URL? = nil) throws -> ScanPreparation {
+                                                cache: [String: CleanFileStamp], inventoryDirectory: URL? = nil,
+                                                stream: ((Data, String, CleanFileStamp?) throws -> Void)? = nil) throws -> ScanPreparation {
         try Task.checkCancellation()
         let support = inventoryDirectory ?? databaseDirectory.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true,
@@ -1239,7 +1303,7 @@ final class ScanController {
         var reused = 0
         var stamps: [String: CleanFileStamp] = [:]
         var completed = false
-        fileLists = (0..<workerCount).map { _ in support.appendingPathComponent("scan-files-\(UUID().uuidString).txt") }
+        fileLists = (0..<(stream == nil ? workerCount : 0)).map { _ in support.appendingPathComponent("scan-files-\(UUID().uuidString).txt") }
         defer {
             handles.forEach { try? $0?.close() }
             if !completed { fileLists.forEach { try? FileManager.default.removeItem(at: $0) } }
@@ -1263,15 +1327,20 @@ final class ScanController {
                 if skipped.count < 100 { skipped.append("Over size limit: \(url.path)") }
                 return
             }
-            if settings.incrementalScanning, let stamp = CleanFileStamp.read(url) {
-                if cache[url.path] == stamp { reused += 1; return }
-                stamps[url.path] = stamp
-            }
-            if url.path.contains("\n") || url.path.contains("\r") {
+            let path = url.path
+            let stamp = settings.incrementalScanning ? CleanFileStamp.read(url) : nil
+            if let stamp, cache[path] == stamp { reused += 1; return }
+            if path.contains("\n") || path.contains("\r") {
                 skippedCount += 1
-                if skipped.count < 100 { skipped.append("Filename contains a line break; rename before scanning: \(url.path.debugDescription)") }
+                if skipped.count < 100 { skipped.append("Filename contains a line break; rename before scanning: \(path.debugDescription)") }
                 return
             }
+            if let stream {
+                try stream(Data((path + "\n").utf8), path, stamp)
+                regularCount += 1
+                return
+            }
+            if let stamp { stamps[path] = stamp }
             // Keep small scans at one client per worker; add batches as the inventory grows.
             if regularCount >= activeBatchCount * 64, activeBatchCount < workerCount {
                 activeBatchCount = min(activeBatchCount + workers, workerCount)
@@ -1289,25 +1358,10 @@ final class ScanController {
         if !isDirectory.boolValue {
             let values = try target.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             try add(target, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
-        } else if !settings.recursive {
-            let options: FileManager.DirectoryEnumerationOptions = settings.scanHidden ? [] : [.skipsHiddenFiles]
-            let children = try FileManager.default.contentsOfDirectory(at: target,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isReadableKey, .fileSizeKey, .contentModificationDateKey], options: options)
-            for url in children {
-                try Task.checkCancellation()
-                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isReadableKey, .fileSizeKey, .contentModificationDateKey]),
-                      values.isRegularFile == true,
-                      settings.followSymlinks || values.isSymbolicLink != true else { continue }
-                guard values.isReadable != false else {
-                    skippedCount += 1
-                    if skipped.count < 100 { skipped.append("Unreadable: \(url.path)") }
-                    continue
-                }
-                try add(url, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
-            }
         } else {
             var options: FileManager.DirectoryEnumerationOptions = []
             if !settings.scanHidden { options.insert(.skipsHiddenFiles) }
+            if !settings.recursive { options.insert(.skipsSubdirectoryDescendants) }
             guard let enumerator = FileManager.default.enumerator(at: target,
                 includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isReadableKey, .fileSizeKey, .contentModificationDateKey],
                 options: options, errorHandler: { url, error in
@@ -1331,6 +1385,10 @@ final class ScanController {
             }
         }
 
+        if stream != nil {
+            return ScanPreparation(count: regularCount, fileLists: [], directFiles: [], skipped: skipped,
+                                   skippedCount: skippedCount, reused: reused)
+        }
         for index in 0..<workerCount where !buffers[index].isEmpty {
             try flush(index)
         }

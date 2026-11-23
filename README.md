@@ -33,6 +33,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.4
+
+[Download 1.2.4](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.4) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
+
+Scans begin during file discovery. About & Licenses includes a flag that reveals as a scan progresses.
+
 ## Aura Protect 1.2.3
 
 [Download 1.2.3](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.3) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)

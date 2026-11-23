@@ -172,18 +172,18 @@ struct StatusDashboardView: View {
                 Spacer()
                 Text("\(Dash.rate(controller.scanTelemetry.peakRate)) F/S").foregroundStyle(Dash.blue)
             }.font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(Dash.muted)
-        }.help("Average file completions since scan-client dispatch, through the last measured interval. Excludes inventory and scanner startup. Peak is the highest measured interval, not a hardware speed rating.")
+        }.help("Average file completions since scan-client dispatch, through the last measured interval. Excludes scanner startup. Discovery may overlap scanning. Peak is the highest measured interval, not a hardware speed rating.")
     }
 
     private var completionPanel: some View {
         instrument(index: "03", name: "INVENTORY PROGRESS", color: Dash.violet) {
             SpeedometerDial(value: controller.totalFiles > 0 ? controller.scanFraction * 100 : nil, maximum: 100,
-                            display: controller.state == .counting ? "Inventory" : controller.totalFiles > 0 ? "\(Int(controller.scanFraction * 100))%" : "—",
-                            unit: controller.state == .counting ? "TOTAL NOT KNOWN YET" : "FILES COMPLETED", color: Dash.violet, isPercentage: true)
+                            display: controller.discoveringFiles || controller.state == .counting ? "Discovering" : controller.totalFiles > 0 ? "\(Int(controller.scanFraction * 100))%" : "—",
+                            unit: controller.discoveringFiles || controller.state == .counting ? "TOTAL NOT KNOWN YET" : "FILES COMPLETED", color: Dash.violet, isPercentage: true)
             HStack {
                 Text(controller.processedFiles.formatted())
                 Spacer()
-                Text("OF \(controller.totalFiles.formatted()) FILES")
+                Text(controller.discoveringFiles ? "FILES COMPLETED" : "OF \(controller.totalFiles.formatted()) FILES")
             }.font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(Dash.muted)
         }.help("Completed files divided by the full eligible inventory. Skipped, reused and incompletely inspected files are reported separately. Inventory preparation has no invented percentage.")
     }

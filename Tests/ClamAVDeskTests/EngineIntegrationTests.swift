@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Testing
 @testable import ClamAVDesk
@@ -8,6 +9,60 @@ struct EngineIntegrationTests {
     private var runtime: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Vendor/ClamAV")
+    }
+
+    @Test func scannerReportsFirstFileBeforeInputCloses() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let list = root.appendingPathComponent("scan-input")
+        try #require(mkfifo(list.path, 0o600) == 0)
+        let database = root.appendingPathComponent("fixture.ndb")
+        try Data("Aura.Stream.Test:0:*:415552412d53545245414d2d54455354\n".utf8).write(to: database)
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        for file in [first, second] { try Data("Clean document.\n".utf8).write(to: file) }
+
+        let log = root.appendingPathComponent("scanner.log")
+        try Data().write(to: log)
+        let output = try FileHandle(forWritingTo: log)
+        defer { try? output.close() }
+        let process = Process()
+        process.executableURL = runtime.appendingPathComponent("bin/clamscan")
+        process.arguments = ["--verbose", "--stdout", "--database=\(database.path)", "--file-list=\(list.path)"]
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            ["CVD_CERTS_DIR": runtime.appendingPathComponent("etc/certs").path]) { _, new in new }
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let pipe = ScanInputPipe(url: list)
+                try pipe.openWriter()
+                try pipe.writePaths(Data("\(first.path)\n".utf8))
+                for _ in 0..<150 {
+                    try Task.checkCancellation()
+                    if try String(contentsOf: log, encoding: .utf8).contains("first.txt: OK") {
+                        try pipe.writePaths(Data("\(second.path)\n".utf8))
+                        return
+                    }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                throw POSIXError(.ETIMEDOUT)
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw POSIXError(.ETIMEDOUT)
+            }
+            defer { group.cancelAll() }
+            try await group.next()
+        }
+        for _ in 0..<150 where process.isRunning { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(!process.isRunning)
+        #expect(process.terminationStatus == 0)
+        #expect(try String(contentsOf: log, encoding: .utf8).contains("second.txt: OK"))
     }
 
     @Test func candidateEngineChecksCleanAndDetectedFilesWithLocalDatabase() throws {
