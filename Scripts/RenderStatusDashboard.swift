@@ -19,8 +19,8 @@ struct RenderStatusDashboard {
             controller.engineIsCurrent = true
             controller.definitionsAreCurrent = !partial
             controller.hasFullDiskAccess = !partial
-            controller.clamVersion = "ClamAV 1.5.4"
-            controller.engineUpdateStatus = "ClamAV 1.5.4 is the latest available engine."
+            controller.clamVersion = "ClamAV 1.5.5"
+            controller.engineUpdateStatus = "ClamAV 1.5.5 is the latest available engine."
             controller.definitionsStatus = partial ? "Installed definitions available. Last online check unavailable." : "Definitions are current. Last checked today."
             controller.parallelScannerAvailable = true
             controller.parallelScannerStatus = "Warm scanner ready. Workers take another batch when available."

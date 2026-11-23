@@ -1,3 +1,21 @@
+# Aura Protect 1.2.3 local candidate
+
+The macOS candidate bundles ClamAV 1.5.5. The installer SHA-256 matched the
+checksum in Cisco-Talos's GitHub release metadata. macOS reported an invalid
+installer signature during verification. The installer was extracted without
+being run. The bundled binaries were then signed and verified using Aura
+Protect's ad-hoc signing workflow.
+
+The local 1.2.3 app built for arm64 and x86_64 and passed deep, strict code
+signature verification. The scanner reported 1.5.5 on Apple silicon and
+under Intel translation.
+Serial checks covered clean files, a harmless positive detection, archive
+inspection, and archive opt-out. Fifteen Swift tests passed. The parallel
+daemon integration test is pending because this session could not bind the
+daemon's Unix socket.
+
+This candidate has not been published.
+
 # Aura Protect 1.2.2 release verification
 
 Published November 3, 2026. **Release housekeeping completed.**

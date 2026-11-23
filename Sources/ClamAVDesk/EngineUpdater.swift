@@ -24,7 +24,7 @@ enum EngineUpdater {
     }
 
     enum UpdateError: LocalizedError {
-        case releaseLookup, noMacPackage, download, digestMismatch, extraction, incompleteRuntime, signing, publisher
+        case releaseLookup, noMacPackage, download, digestMismatch, extraction, incompleteRuntime, signing, publisher, smokeTest
 
         var errorDescription: String? {
             switch self {
@@ -35,6 +35,7 @@ enum EngineUpdater {
             case .extraction: "The official ClamAV engine package could not be unpacked."
             case .incompleteRuntime: "The downloaded package did not contain the required ClamAV components."
             case .publisher: "The package publisher could not be verified as Cisco. The installed engine was kept."
+            case .smokeTest: "The new engine failed its scan check. The installed engine was kept."
             case .signing: "macOS could not prepare the downloaded engine for private app use."
             }
         }
@@ -73,13 +74,15 @@ enum EngineUpdater {
                        packageURL: asset.browser_download_url, digest: digest.lowercased(), assetName: asset.name)
     }
 
-    static func install(release: Release, status: @escaping @Sendable (String) -> Void, supportRoot: URL? = nil) async throws -> URL {
+    static func install(release: Release, database: URL?, supportRoot: URL? = nil, status: @escaping @Sendable (String) -> Void) async throws -> URL {
         let manager = FileManager.default
         let support = supportRoot ?? manager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Aura Protect/Engine", isDirectory: true)
         let destination = support.appendingPathComponent("Versions/\(release.version)", isDirectory: true)
         if manager.fileExists(atPath: destination.path) {
             guard validateRuntime(destination, expectedVersion: release.version) else { throw UpdateError.incompleteRuntime }
+            status("Checking that the new engine can scan…")
+            try smokeTest(destination, database: database)
             return destination
         }
         let staging = support.appendingPathComponent("Staging-\(UUID().uuidString)", isDirectory: true)
@@ -141,13 +144,12 @@ enum EngineUpdater {
                 throw UpdateError.signing
             }
         }
+        guard validateRuntime(prepared, expectedVersion: release.version) else { throw UpdateError.incompleteRuntime }
+        status("Checking that the new engine can scan…")
+        try smokeTest(prepared, database: database)
         try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard !manager.fileExists(atPath: destination.path) else { throw UpdateError.incompleteRuntime }
         try manager.moveItem(at: prepared, to: destination)
-        guard validateRuntime(destination, expectedVersion: release.version) else {
-            try? manager.removeItem(at: destination)
-            throw UpdateError.incompleteRuntime
-        }
         return destination
     }
 
@@ -161,7 +163,39 @@ enum EngineUpdater {
         return FileManager.default.fileExists(atPath: root.appendingPathComponent("etc/certs/clamav.crt").path)
     }
 
-    private static func output(_ executable: String, _ arguments: [String], library: String? = nil) -> (success: Bool, text: String) {
+    static func smokeTest(_ runtime: URL, database: URL?) throws {
+        let manager = FileManager.default
+        let scratch = manager.temporaryDirectory.appendingPathComponent("AuraEngineCheck-\(UUID().uuidString)")
+        try manager.createDirectory(at: scratch, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+        defer { try? manager.removeItem(at: scratch) }
+
+        let clean = scratch.appendingPathComponent("clean.txt")
+        let detected = scratch.appendingPathComponent("fixture.txt")
+        let signature = scratch.appendingPathComponent("fixture.ndb")
+        let marker = Data("Aura Protect harmless engine validation fixture.".utf8)
+        let hex = marker.map { String(format: "%02x", $0) }.joined()
+        let signatureName = "Aura.Engine.Validation"
+        try Data("Aura Protect clean engine validation document.".utf8).write(to: clean)
+        try marker.write(to: detected)
+        try "\(signatureName):0:*:\(hex)\n".write(to: signature, atomically: true, encoding: .utf8)
+
+        var arguments = ["--stdout", "--no-summary", "--database=\(signature.path)"]
+        if let database { arguments.append("--database=\(database.path)") }
+        arguments += [clean.path, detected.path]
+        let result = output(runtime.appendingPathComponent("bin/clamscan").path, arguments,
+                            library: runtime.appendingPathComponent("lib").path,
+                            certificates: runtime.appendingPathComponent("etc/certs").path, timeout: 120)
+        let lines = result.text.split(whereSeparator: \.isNewline)
+        guard result.code == 1, lines.contains("\(clean.path): OK"),
+              lines.contains("\(detected.path): \(signatureName).UNOFFICIAL FOUND") else {
+            throw UpdateError.smokeTest
+        }
+    }
+
+    private static func output(_ executable: String, _ arguments: [String], library: String? = nil,
+                               certificates: String? = nil, timeout: TimeInterval? = nil)
+        -> (success: Bool, text: String, code: Int32) {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -170,13 +204,19 @@ enum EngineUpdater {
         var environment = ProcessInfo.processInfo.environment
         environment["LC_ALL"] = "C"
         if let library { environment["DYLD_LIBRARY_PATH"] = library }
+        if let certificates { environment["CVD_CERTS_DIR"] = certificates }
         process.environment = environment
         do {
             try process.run()
+            let deadline = DispatchWorkItem {
+                if process.isRunning { process.terminate() }
+            }
+            if let timeout { DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline) }
+            defer { deadline.cancel() }
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return (process.terminationStatus == 0, String(decoding: data, as: UTF8.self))
-        } catch { return (false, error.localizedDescription) }
+            return (process.terminationStatus == 0, String(decoding: data, as: UTF8.self), process.terminationStatus)
+        } catch { return (false, error.localizedDescription, -1) }
     }
 
     private static func sha256(of url: URL) throws -> String {

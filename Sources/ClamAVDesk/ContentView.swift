@@ -35,7 +35,7 @@ struct ContentView: View {
         .preferredColorScheme(tab == 0 || tab == 1 ? .dark : nil)
         .onChange(of: controller.scanRequestID) { _, _ in tab = 1 }
         .onChange(of: controller.state) { _, state in
-            if state.hasResults && (!controller.detections.isEmpty || !controller.incompletePaths.isEmpty) { tab = 2 }
+            if state.hasResults && (!controller.detections.isEmpty || !controller.incompletePaths.isEmpty || controller.summary.skippedFiles > 0) { tab = 2 }
         }
         .sheet(isPresented: Binding(
             get: { controller.showFullDiskAccessHelp },
@@ -261,12 +261,22 @@ private struct ResultsView: View {
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled).padding(.horizontal, 8)
                 }
             }
-            if !controller.incompletePaths.isEmpty {
+            if controller.state.hasResults && !controller.incompletePaths.isEmpty {
                 GroupBox("Files needing further inspection") {
                     ScrollView {
-                        VStack(alignment: .leading) {
-                            Text("These files reached inspection limits or are encrypted. They are not confirmed clean or confirmed malware.")
-                            ForEach(Array(controller.incompletePaths).sorted(), id: \.self) { Text($0).font(.caption.monospaced()).textSelection(.enabled) }
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(controller.incompletePaths.sorted(), id: \.self) { path in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(path).font(.caption.monospaced()).textSelection(.enabled)
+                                        if let reason = controller.incompleteReasons[path] {
+                                            Text(reason).font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Button("Show in Finder") { controller.revealIncompleteFile(path) }
+                                }
+                            }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.frame(maxHeight: 140)
                 }
@@ -313,11 +323,16 @@ private struct ResultsView: View {
                     }.padding(8)
                 }
             }
-            if !controller.skippedFileDetails.isEmpty {
+            if controller.state.hasResults && !controller.skippedFileDetails.isEmpty {
                 GroupBox("Files not scanned") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("These files exceeded limits, could not be read, or have unsupported filenames. The saved report includes the total.")
+                        Text("For files over the size limit, review the scan limits in Settings. For unsupported filenames, rename the file and scan it again.")
                             .font(.caption).foregroundStyle(.secondary)
+                        if !controller.hasFullDiskAccess {
+                            Text("Full Disk Access can help Aura Protect read protected folders. After granting access, select the affected folder and scan it again.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Open Full Disk Access Settings") { controller.openFullDiskAccessSettings() }
+                        }
                         ScrollView(.vertical) {
                             LazyVStack(alignment: .leading, spacing: 4) {
                                 ForEach(controller.skippedFileDetails, id: \.self) {

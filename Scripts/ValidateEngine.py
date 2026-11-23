@@ -35,7 +35,7 @@ def main():
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
             output.writestr('fixture.txt', marker)
         for executable in ['bin/clamscan', 'bin/clamdscan', 'bin/freshclam', 'sbin/clamd']:
-            assert '1.5.4' in run(RUNTIME / executable, '--help')
+            assert '1.5.5' in run(RUNTIME / executable, '--help')
         run(RUNTIME / 'bin/clamscan', f'--database={database}', clean)
         assert 'Aura.Regression.Test' in run(RUNTIME / 'bin/clamscan', f'--database={database}', detected, expected=1)
         assert 'Aura.Regression.Test' in run(RUNTIME / 'bin/clamscan', f'--database={database}', archive, expected=1)

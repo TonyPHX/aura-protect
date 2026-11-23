@@ -10,6 +10,23 @@ struct EngineIntegrationTests {
             .deletingLastPathComponent().appendingPathComponent("Vendor/ClamAV")
     }
 
+    @Test func candidateEngineChecksCleanAndDetectedFilesWithLocalDatabase() throws {
+        let database = FileManager.default.temporaryDirectory.appendingPathComponent("AuraEngineDatabase-\(UUID())")
+        try FileManager.default.createDirectory(at: database, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: database) }
+        let local = database.appendingPathComponent("local.ndb")
+
+        try EngineUpdater.smokeTest(runtime, database: nil)
+        try "Aura.Local.Test:0:*:41415552412d4c4f43414c2d4441544142415345\n"
+            .write(to: local, atomically: true, encoding: .utf8)
+        try EngineUpdater.smokeTest(runtime, database: database)
+
+        try "invalid signature\n".write(to: local, atomically: true, encoding: .utf8)
+        #expect(throws: EngineUpdater.UpdateError.self) {
+            try EngineUpdater.smokeTest(runtime, database: database)
+        }
+    }
+
     @Test @MainActor func realEngineDrainsEveryBatchAndPreservesDetection() async throws {
         let root = URL(fileURLWithPath: "/private/tmp/aura-engine-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

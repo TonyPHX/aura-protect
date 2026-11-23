@@ -57,6 +57,7 @@ final class ScanController {
     var detectionStamps: [String: CleanFileStamp] = [:]
     var detectionNames: [String: String] = [:]
     var incompletePaths: Set<String> = []
+    var incompleteReasons: [String: String] = [:]
     var history: [ScanHistoryEntry] = []
     var quarantineRecords: [QuarantineRecord] = []
     var recoveryStatus = ""
@@ -599,7 +600,9 @@ final class ScanController {
             let release = try await EngineUpdater.latestRelease()
             if EngineUpdater.compare(release.version, current) == .orderedDescending {
                 engineUpdateStatus = "Downloading ClamAV \(release.version)…"
-                let directory = try await EngineUpdater.install(release: release) { [weak self] status in
+                let directory = try await EngineUpdater.install(
+                    release: release, database: Self.hasVirusDatabase ? Self.databaseDirectory : nil
+                ) { [weak self] status in
                     Task { @MainActor in self?.engineUpdateStatus = status }
                 }
                 if let previous = UserDefaults.standard.string(forKey: EngineUpdater.currentEngineKey), previous != directory.path {
@@ -875,16 +878,20 @@ final class ScanController {
             scanTelemetry.report(path: String(line.dropFirst("Scanning ".count)),
                                  worker: source.flatMap { telemetryWorkers[$0] } ?? 0, completed: false)
         }
-        for line in lines.dropLast() where OutputParser.isFileResult(line) {
+        for line in lines.dropLast() {
+            guard OutputParser.isFileResult(line) else {
+                if OutputParser.isGenuineError(line) { appendConcern(line) }
+                continue
+            }
             processedFiles += 1
             if let source { batchCompletedCounts[source, default: 0] += 1 }
             if let path = OutputParser.resultPath(line) {
                 scanTelemetry.report(path: path, worker: source.flatMap { telemetryWorkers[$0] } ?? 0, completed: true)
+                updateIncrementalCache(path: path, from: line)
             }
-            updateIncrementalCache(from: line)
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if OutputParser.isIncomplete(line) {
-                incompletePaths.insert(source.flatMap { directScanTargets[$0]?.path } ?? OutputParser.resultPath(line) ?? line)
+                recordIncomplete(line, target: source.flatMap { directScanTargets[$0]?.path })
             } else if let path = (OutputParser.infectionPath(line).map { parsed in source.flatMap { directScanTargets[$0]?.path } ?? parsed }), !detections.contains(path) {
                 detections.append(path)
                 detectionStamps[path] = CleanFileStamp.read(URL(fileURLWithPath: path))
@@ -893,11 +900,23 @@ final class ScanController {
                 appendConcern(line)
             }
         }
-        for line in lines.dropLast() where !OutputParser.isFileResult(line) && OutputParser.isGenuineError(line) {
-            appendConcern(line)
-        }
         progress = totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 0.99) : 0
         refreshTiming()
+    }
+
+    private func recordIncomplete(_ line: String, target: String? = nil) {
+        let path = target ?? OutputParser.resultPath(line) ?? line
+        incompletePaths.insert(path)
+        let reason = line.localizedCaseInsensitiveContains("heuristics.encrypted")
+            ? "Encrypted. Scan an unlocked copy."
+            : "Inspection limit reached. If this is an archive, scan its extracted files."
+        incompleteReasons[path] = reason
+    }
+
+    func revealIncompleteFile(_ path: String) {
+        let url = Self.resolveDetectionPath(path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     private func refreshTiming() {
@@ -915,11 +934,13 @@ final class ScanController {
         let remainingLines: [(String, Int)] = [(outputBuffer, 0)] + parallelOutputBuffers.map { ($0.value, telemetryWorkers[$0.key] ?? 0) }
         for (line, worker) in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
             processedFiles += 1
-            if let path = OutputParser.resultPath(line) { scanTelemetry.report(path: path, worker: worker, completed: true) }
-            updateIncrementalCache(from: line)
+            if let path = OutputParser.resultPath(line) {
+                scanTelemetry.report(path: path, worker: worker, completed: true)
+                updateIncrementalCache(path: path, from: line)
+            }
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if OutputParser.isIncomplete(line) {
-                incompletePaths.insert(OutputParser.resultPath(line) ?? line)
+                recordIncomplete(line)
             } else if let path = OutputParser.infectionPath(line), !detections.contains(path) {
                 detections.append(path)
                 detectionStamps[path] = CleanFileStamp.read(URL(fileURLWithPath: path))
@@ -986,7 +1007,7 @@ final class ScanController {
         timer?.invalidate()
         inventoryFinishedAt = nil; preparationDuration = 0; startupDuration = 0
         processedFiles = 0; totalFiles = 0; progress = 0; elapsed = 0
-        estimatedRemaining = nil; detections = []; detectionStamps = [:]; detectionNames = [:]; incompletePaths = []; summary = .init()
+        estimatedRemaining = nil; detections = []; detectionStamps = [:]; detectionNames = [:]; incompletePaths = []; incompleteReasons = [:]; summary = .init()
         scanCompletedAt = nil
         quarantinedPaths = []; quarantineStatus = nil
         outputBuffer = ""
@@ -1032,8 +1053,8 @@ final class ScanController {
         if log.count > 100_000 { log.removeFirst(log.count - 80_000) }
     }
 
-    private func updateIncrementalCache(from line: String) {
-        guard scanUsesIncrementalCache, let path = OutputParser.resultPath(line) else { return }
+    private func updateIncrementalCache(path: String, from line: String) {
+        guard scanUsesIncrementalCache else { return }
         if line.hasSuffix(" FOUND") || line.contains(" ERROR") {
             pendingCache.removeValue(forKey: path)
             return
@@ -1073,11 +1094,24 @@ final class ScanController {
         } catch { clamVersion = "ClamAV unavailable" }
     }
 
+    private nonisolated static var preferredManagedEngine: URL? {
+        guard let path = UserDefaults.standard.string(forKey: EngineUpdater.currentEngineKey) else { return nil }
+        let root = URL(fileURLWithPath: path)
+        if let bundled = Bundle.main.object(forInfoDictionaryKey: "ClamAVEngineVersion") as? String,
+           let bundledScanner = Bundle.main.resourceURL?.appendingPathComponent("ClamAV/bin/clamscan"),
+           FileManager.default.isExecutableFile(atPath: bundledScanner.path),
+           let managed = EngineUpdater.version(from: root.lastPathComponent),
+           EngineUpdater.compare(managed, bundled) == .orderedAscending {
+            return nil
+        }
+        return root
+    }
+
     nonisolated static func findExecutable(_ name: String) -> URL? {
         var candidates: [String] = []
-        if let managed = UserDefaults.standard.string(forKey: EngineUpdater.currentEngineKey) {
-            candidates += [URL(fileURLWithPath: managed).appendingPathComponent("bin/\(name)").path,
-                           URL(fileURLWithPath: managed).appendingPathComponent("sbin/\(name)").path]
+        if let managed = preferredManagedEngine {
+            candidates += [managed.appendingPathComponent("bin/\(name)").path,
+                           managed.appendingPathComponent("sbin/\(name)").path]
         }
         if let resources = Bundle.main.resourceURL {
             candidates += [resources.appendingPathComponent("ClamAV/bin/\(name)").path,
@@ -1107,8 +1141,8 @@ final class ScanController {
 
     nonisolated static var certificatesDirectory: URL? {
         var candidates: [URL] = []
-        if let managed = UserDefaults.standard.string(forKey: EngineUpdater.currentEngineKey) {
-            candidates.append(URL(fileURLWithPath: managed).appendingPathComponent("etc/certs", isDirectory: true))
+        if let managed = preferredManagedEngine {
+            candidates.append(managed.appendingPathComponent("etc/certs", isDirectory: true))
         }
         if let resources = Bundle.main.resourceURL {
             candidates.append(resources.appendingPathComponent("ClamAV/etc/certs", isDirectory: true))

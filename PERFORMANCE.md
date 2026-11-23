@@ -1,3 +1,21 @@
+# Scan performance checks
+
+For engine and scanner changes, compare the candidate to the current release
+using the same machine, definitions, scan settings, and corpus. Measure
+preparation, engine startup, and matching separately. Include small files,
+archives, and a repeat scan to capture caching behavior. Report throughput
+alongside file coverage, errors, and detections so a faster result still
+accounts for the same work.
+
+## ClamAV 1.5.5 serial comparison
+
+On Apple silicon, with one harmless signature and seven timed runs per
+engine after a warm-up, median wall time for 512 small files went from
+0.335 s to 0.247 s. For 24 ZIP files, it went from 0.293 s to 0.277 s.
+Both engines reported the same file counts. Times include process startup.
+The parallel benchmark could not run because the session blocked the daemon's
+Unix socket. These serial timings use synthetic files and definitions.
+
 # Manual worker benchmark
 
 Measured on 2026-10-24 with the bundled ClamAV 1.5.4 runtime on this Apple silicon Mac. The app’s byte-balanced inventory was split into the requested number of concurrent file-list clients; the daemon allowed that worker count plus one spare thread. Quiet also lowers priority in the app; this benchmark isolates worker counts rather than QoS.
