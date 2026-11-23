@@ -50,7 +50,10 @@ struct ContentView: View {
 private struct LicensesView: View {
     @Environment(ScanController.self) private var controller
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private var flagReveal: Double {
+        if controller.hasUnlockedCompletionFlag { return 1 }
         switch controller.state {
         case .counting, .scanning:
             let completed = Double(controller.processedFiles)
@@ -113,7 +116,21 @@ private struct LicensesView: View {
                 if flagReveal > 0 {
                     ScanCompletionFlag(reveal: flagReveal)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 28)
+                        .overlay {
+                            if !reduceMotion, let start = controller.flagFireworksStartedAt {
+                                FlagFireworks(start: start)
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .task(id: controller.hasUnlockedCompletionFlag && !reduceMotion) {
+                            guard controller.hasUnlockedCompletionFlag, !reduceMotion,
+                                  controller.flagFireworksStartedAt == nil else { return }
+                            do { try await Task.sleep(for: .milliseconds(350)) }
+                            catch { return }
+                            controller.flagFireworksStartedAt = .now
+                        }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -87,6 +87,8 @@ final class ScanController {
     private var daemonProcess: Process?
     private var updateProcess: Process?
     var discoveringFiles = false
+    private(set) var hasUnlockedCompletionFlag = false
+    var flagFireworksStartedAt: Date?
     private var streamingInventory = false
     private var beginInventoryFeed: (([URL]) -> Void)?
     private var inventoryTask: Task<Void, Never>?
@@ -1043,6 +1045,9 @@ final class ScanController {
         scanCompletedAt = Date()
         progress = 1
         state = incompletePaths.isEmpty && skippedFileCount == 0 ? ScanState.completionState(exitCode: finalCode, processedFiles: processedFiles) : .finishedWithIssues
+        if state == .finished || state == .finishedWithIssues {
+            hasUnlockedCompletionFlag = true
+        }
         resultsReviewed = detections.isEmpty
         if !incompletePaths.isEmpty { appendConcern("Some files could not be fully inspected. Review Files needing further inspection.") }
         if state == .failed && log.isEmpty {

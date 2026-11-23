@@ -52,3 +52,51 @@ struct ScanCompletionFlag: View {
         .accessibilityLabel("Stylized American flag")
     }
 }
+
+struct FlagFireworks: View {
+    let start: Date
+    @State private var finished = false
+
+    var body: some View {
+        if !finished {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                Canvas { context, size in
+                    let elapsed = timeline.date.timeIntervalSince(start)
+                    guard elapsed >= 0, elapsed < 30 else { return }
+                    let colors: [Color] = [.red, .cyan, .white, .yellow]
+                    let burstInterval = 0.62
+                    let latest = Int(elapsed / burstInterval)
+                    let scale = min(size.width / 460, 1)
+                    for burst in max(0, latest - 2)...latest {
+                        let age = (elapsed - Double(burst) * burstInterval) / 1.45
+                        guard age < 1 else { continue }
+                        let side = burst.isMultiple(of: 2) ? -1.0 : 1.0
+                        let spread = Double((burst * 7) % 13) / 13
+                        let x = size.width / 2 + side * (97 + 82 * spread) * scale
+                        let y = size.height * (0.19 + Double((burst * 5) % 11) / 20)
+                        for spark in 0..<18 {
+                            let angle = Double(spark) * .pi / 9 + Double(burst) * 0.47
+                            let speed = 29 + Double((spark * 13 + burst * 7) % 30)
+                            let distance = speed * (1 - pow(1 - age, 2)) * scale
+                            let dx = cos(angle) * distance
+                            let dy = sin(angle) * distance
+                            let gravity = age * age * 28
+                            let trail = Path { path in
+                                path.move(to: CGPoint(x: x + dx * 0.80, y: y + dy * 0.80 + gravity))
+                                path.addLine(to: CGPoint(x: x + dx, y: y + dy + gravity))
+                            }
+                            context.stroke(trail, with: .color(colors[burst % colors.count].opacity((1 - age) * 0.85)),
+                                           style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                        }
+                    }
+                }
+            }
+            .task {
+                let remaining = max(0, 30 - Date().timeIntervalSince(start))
+                do { try await Task.sleep(for: .seconds(remaining)) }
+                catch { return }
+                finished = true
+            }
+        }
+    }
+}
