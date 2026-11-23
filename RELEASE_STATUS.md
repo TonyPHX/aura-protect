@@ -1,3 +1,12 @@
+# Aura Protect 1.2.6 release verification
+
+[GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.6).
+
+- Tag v1.2.6 points to source commit `6f1362b`.
+- The uploaded universal macOS ZIP matches the locally verified SHA-256 `cb37939b4f21982a55e4c2a4fa13881ec0f87f0273c6b21e9e7b2893a9b257bc`. The extracted app passed deep, strict signature verification and reported ClamAV 1.5.5.
+- Sixteen tests passed. The daemon integration test was excluded because the environment blocks its Unix socket.
+- Wiki commit `ac3ebc3` documents the live file counter and flag fade-in.
+
 # Aura Protect 1.2.5 release verification
 
 [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.5).
