@@ -63,10 +63,10 @@ struct StatusDashboardView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header
                     if geometry.size.width >= 900 {
-                        HStack(alignment: .top, spacing: 14) { speedPanel; averagePanel; completionPanel }
+                        HStack(alignment: .top, spacing: 14) { speedPanel; averagePanel; fileCountPanel }
                     } else {
                         speedPanel
-                        HStack(alignment: .top, spacing: 14) { averagePanel; completionPanel }
+                        HStack(alignment: .top, spacing: 14) { averagePanel; fileCountPanel }
                     }
                     sessionStrip
                     throughputPanel
@@ -175,17 +175,23 @@ struct StatusDashboardView: View {
         }.help("Average file completions since scan-client dispatch, through the last measured interval. Excludes scanner startup. Discovery may overlap scanning. Peak is the highest measured interval, not a hardware speed rating.")
     }
 
-    private var completionPanel: some View {
-        instrument(index: "03", name: "INVENTORY PROGRESS", color: Dash.violet) {
-            SpeedometerDial(value: controller.totalFiles > 0 ? controller.scanFraction * 100 : nil, maximum: 100,
-                            display: controller.discoveringFiles || controller.state == .counting ? "Discovering" : controller.totalFiles > 0 ? "\(Int(controller.scanFraction * 100))%" : "—",
-                            unit: controller.discoveringFiles || controller.state == .counting ? "TOTAL NOT KNOWN YET" : "FILES COMPLETED", color: Dash.violet, isPercentage: true)
+    private var fileCountPanel: some View {
+        instrument(index: "03", name: "FILES SCANNED", color: Dash.violet) {
+            Text(controller.processedFiles, format: .number)
+                .font(.system(size: 56, weight: .semibold, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(Dash.violet)
+                .lineLimit(1)
+                .minimumScaleFactor(0.25)
+                .frame(maxWidth: .infinity)
+                .frame(height: 205)
+                .accessibilityLabel("Files scanned")
+                .accessibilityValue(controller.processedFiles.formatted())
             HStack {
-                Text(controller.processedFiles.formatted())
+                Text(phase)
                 Spacer()
-                Text(controller.discoveringFiles ? "FILES COMPLETED" : "OF \(controller.totalFiles.formatted()) FILES")
             }.font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(Dash.muted)
-        }.help("Completed files divided by the full eligible inventory. Skipped, reused and incompletely inspected files are reported separately. Inventory preparation has no invented percentage.")
+        }.help("Files processed by the scanner in the current or most recent scan. The count updates during file discovery.")
     }
 
     private var sessionStrip: some View {

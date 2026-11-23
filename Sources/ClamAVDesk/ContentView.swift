@@ -127,7 +127,7 @@ private struct LicensesView: View {
                         .task(id: controller.hasUnlockedCompletionFlag && !reduceMotion) {
                             guard controller.hasUnlockedCompletionFlag, !reduceMotion,
                                   controller.flagFireworksStartedAt == nil else { return }
-                            do { try await Task.sleep(for: .milliseconds(350)) }
+                            do { try await Task.sleep(for: .milliseconds(650)) }
                             catch { return }
                             controller.flagFireworksStartedAt = .now
                         }

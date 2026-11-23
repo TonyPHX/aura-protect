@@ -33,6 +33,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.6
+
+[Download 1.2.6](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.6) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
+
+The Performance Cockpit shows a digital **Files Scanned** counter. It updates during file discovery and keeps the final count visible after the scan. The About & Licenses flag now fades in with a blue-white shimmer.
+
 ## Aura Protect 1.2.5
 
 [Download 1.2.5](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.5) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
