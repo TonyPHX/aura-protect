@@ -35,6 +35,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.13
+
+[Download 1.2.13](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.13) · [Diagnostics instructions](https://github.com/TonyPHX/aura-protect/wiki/Troubleshooting#crashes-and-freezes)
+
+Aura Protect records unexpected exits and main-thread stalls locally. After relaunching, open **Help → Open Diagnostics Folder** and look for `last-issue.json`. If a matching macOS crash report is available, the file also includes its termination reason.
+
 ## Aura Protect 1.2.12
 
 [Download 1.2.12](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.12) · [Scan Console guide](https://github.com/TonyPHX/aura-protect/wiki/Scan-Console)
