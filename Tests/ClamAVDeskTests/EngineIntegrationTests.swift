@@ -95,6 +95,7 @@ struct EngineIntegrationTests {
                 #expect(try Data(contentsOf: destination).count <= first.count)
                 #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 2)
                 try pipe.submitPaths(last, shouldPause: { false })
+                try ScanInputPipe.drainBacklogs([pipe], shouldPause: { false })
                 #expect(!pipe.hasBacklog)
                 pipe.closeWriter()
             }
@@ -109,6 +110,46 @@ struct EngineIntegrationTests {
         try #require(!process.isRunning)
         #expect(process.terminationStatus == 0)
         #expect(try Data(contentsOf: destination) == first + paused + last)
+    }
+
+    @Test func resumedWorkerReceivesInputWhileAnotherWorkersPipeIsFull() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let slow = root.appendingPathComponent("slow")
+        let ready = root.appendingPathComponent("ready")
+        try #require(mkfifo(slow.path, 0o600) == 0)
+        try #require(mkfifo(ready.path, 0o600) == 0)
+        let slowReader = open(slow.path, O_RDONLY | O_NONBLOCK)
+        try #require(slowReader >= 0)
+        defer { close(slowReader) }
+        let readyReader = open(ready.path, O_RDONLY | O_NONBLOCK)
+        try #require(readyReader >= 0)
+        defer { close(readyReader) }
+
+        let marker = Data("queued for the ready worker\n".utf8)
+        let drain = Task.detached {
+            let pipes = [ScanInputPipe(url: slow), ScanInputPipe(url: ready)]
+            try pipes[0].submitPaths(Data(repeating: 65, count: 4_194_304), shouldPause: { true })
+            try pipes[1].submitPaths(marker, shouldPause: { true })
+            do {
+                try ScanInputPipe.drainBacklogs(pipes, shouldPause: { false })
+                Issue.record("Expected the slow pipe to remain blocked")
+            } catch is CancellationError {}
+        }
+        defer { drain.cancel() }
+
+        var received = Data()
+        for _ in 0..<200 {
+            var bytes = [UInt8](repeating: 0, count: marker.count)
+            let count = read(readyReader, &bytes, bytes.count)
+            if count > 0 { received.append(contentsOf: bytes.prefix(count)) }
+            if received.count == marker.count { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(received == marker)
+        drain.cancel()
+        try await drain.value
     }
 
     @Test func candidateEngineChecksCleanAndDetectedFilesWithLocalDatabase() throws {
