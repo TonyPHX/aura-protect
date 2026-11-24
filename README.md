@@ -35,6 +35,13 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.11
+
+[Download 1.2.11](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.11) · [Scan guide](https://github.com/TonyPHX/aura-protect/wiki/Running-a-Scan)
+
+- Fixed a resume issue where one full worker pipe could leave other parallel scan workers idle.
+- Added **Scan Home Folder (username)** as the first Quick Targets option. Your macOS home folder is selected when the app opens.
+
 ## Aura Protect 1.2.10
 
 [Download 1.2.10](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.10) · [Scan guide](https://github.com/TonyPHX/aura-protect/wiki/Running-a-Scan)
