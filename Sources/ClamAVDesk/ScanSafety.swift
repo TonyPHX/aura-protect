@@ -10,6 +10,10 @@ struct CleanFileStamp: Equatable, Sendable {
     let inode: UInt64
 
     static func read(_ url: URL) -> CleanFileStamp? {
+        autoreleasepool { readStamp(url) }
+    }
+
+    private static func readStamp(_ url: URL) -> CleanFileStamp? {
         let manager = FileManager.default
         guard let before = try? manager.attributesOfItem(atPath: url.path),
               before[.type] as? FileAttributeType == .typeRegular,
@@ -28,10 +32,13 @@ func fileSHA256(_ url: URL) throws -> String {
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var hash = SHA256()
-    while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
-        if Task.isCancelled { throw CancellationError() }
+    // FileHandle bridges reads through Foundation. Drain each buffer even on long-lived worker threads.
+    while try autoreleasepool(invoking: {
+        try Task.checkCancellation()
+        guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { return false }
         hash.update(data: data)
-    }
+        return true
+    }) {}
     return hash.finalize().map { String(format: "%02x", $0) }.joined()
 }
 

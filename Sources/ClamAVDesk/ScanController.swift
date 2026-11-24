@@ -128,6 +128,9 @@ final class ScanController {
     private var definitionRetryCount = 0
     private var activeDaemonConfig: URL?
     private var activeDaemonSettings: ScanSettings?
+    // Cache saturation affects reuse only. All eligible files still reach ClamAV.
+    private nonisolated static let cleanCacheLimit = 100_000
+    private nonisolated static let inFlightStampLimit = 16_384
     private var incrementalCache: [String: CleanFileStamp] = [:]
     private var incrementalCacheKey = ""
     private var preScanStamps: [String: CleanFileStamp] = [:]
@@ -317,7 +320,10 @@ final class ScanController {
                     DispatchQueue.main.sync { [weak self] in
                         MainActor.assumeIsolated {
                             guard let self, self.scanGeneration == generation, self.state == .scanning else { return }
-                            self.preScanStamps.merge(stamps) { _, newest in newest }
+                            for (path, stamp) in stamps
+                                where self.preScanStamps.count < Self.inFlightStampLimit || self.preScanStamps[path] != nil {
+                                self.preScanStamps[path] = stamp
+                            }
                         }
                     }
                 }
@@ -864,21 +870,26 @@ final class ScanController {
         process.standardError = daemonPipe
         daemonProcess = process
         state = .scanning
-        daemonPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            let text = String(decoding: data, as: UTF8.self)
-            Task { @MainActor in
-                guard self?.daemonProcess === process else { return }
-                self?.consumeDaemonOutput(text)
-            }
-        }
         do {
             try process.run()
         } catch {
             fallbackToSingleScan(executable: fallbackScanner, fileLists: fileLists,
                                  directFiles: directFiles, settings: settings)
             return
+        }
+        daemonPipe.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
+            let text = autoreleasepool { () -> String? in
+                let data = handle.availableData
+                return data.isEmpty ? nil : String(decoding: data, as: UTF8.self)
+            }
+            guard let text else {
+                handle.readabilityHandler = nil
+                return
+            }
+            Task { @MainActor [weak self, weak process] in
+                guard let process, self?.daemonProcess === process else { return }
+                self?.consumeDaemonOutput(text)
+            }
         }
 
         scanTask = Task { [weak self] in
@@ -990,9 +1001,12 @@ final class ScanController {
             }
 
             while true {
-                let data = pipe.fileHandleForReading.availableData
-                guard !data.isEmpty else { break }
-                await verifyResults(String(decoding: data, as: UTF8.self))
+                let text = autoreleasepool { () -> String? in
+                    let data = pipe.fileHandleForReading.availableData
+                    return data.isEmpty ? nil : String(decoding: data, as: UTF8.self)
+                }
+                guard let text else { break }
+                await verifyResults(text)
             }
             process.waitUntilExit()
             await verifyResults("\n")
@@ -1014,7 +1028,7 @@ final class ScanController {
 
     private func receiveScanData(_ text: String, source: ObjectIdentifier?, generation: UUID) -> VerificationBatch? {
         guard scanGeneration == generation, state == .scanning else { return nil }
-        return consume(text, source: source)
+        return autoreleasepool { consume(text, source: source) }
     }
 
     private func applyVerification(_ batch: VerificationBatch, clean: [String: CleanFileStamp],
@@ -1022,7 +1036,9 @@ final class ScanController {
         guard scanGeneration == generation, state == .scanning else { return }
         for path in batch.clean.keys where cacheVerificationIDs[path] == batch.id {
             cacheVerificationIDs.removeValue(forKey: path)
-            pendingCache[path] = clean[path]
+            if pendingCache.count < Self.cleanCacheLimit, let stamp = clean[path] {
+                pendingCache[path] = stamp
+            }
         }
         detectionStamps.merge(detected) { original, _ in original }
     }
@@ -1190,6 +1206,7 @@ final class ScanController {
         inventoryTask?.cancel()
         discoveringFiles = false
         inputReadiness = nil
+        defer { clearScanVerification() }
         if state == .cancelling {
             scanWasCancelled = true
             state = .idle
@@ -1239,7 +1256,6 @@ final class ScanController {
         timer?.invalidate()
         inventoryFinishedAt = nil; preparationDuration = 0; startupDuration = 0
         inputDeliveryDuration = nil; firstResultDuration = nil; scanStartedUptime = nil
-        preScanStamps.removeAll()
         processedFiles = 0; totalFiles = 0; progress = 0; elapsed = 0
         estimatedRemaining = nil; detections = []; detectionStamps = [:]; detectionNames = [:]; incompletePaths = []; incompleteReasons = [:]; summary = .init()
         scanCompletedAt = nil
@@ -1256,7 +1272,14 @@ final class ScanController {
         scanErrorCount = 0
         daemonOutputBuffer = ""
         skippedFileDetails = []; skippedFileCount = 0; reusedFileCount = 0
-        pendingCache = [:]; cacheVerificationIDs = [:]; scanUsesIncrementalCache = false
+        clearScanVerification()
+    }
+
+    private func clearScanVerification() {
+        preScanStamps = [:]
+        pendingCache = [:]
+        cacheVerificationIDs = [:]
+        scanUsesIncrementalCache = false
     }
 
     private func fail(_ message: String) {
@@ -1266,6 +1289,8 @@ final class ScanController {
         scanTelemetry.latestPathIsCurrent = false
         timer?.invalidate(); timer = nil
         inventoryTask?.cancel()
+        scanOutputTasks.values.forEach { $0.cancel() }
+        clearScanVerification()
         discoveringFiles = false
         inputReadiness = nil
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
@@ -1522,7 +1547,7 @@ final class ScanController {
                 regularCount += 1
                 return
             }
-            if let stamp { stamps[path] = stamp }
+            if stamps.count < Self.cleanCacheLimit, let stamp { stamps[path] = stamp }
             // Keep small scans at one client per worker; add batches as the inventory grows.
             if regularCount >= activeBatchCount * 64, activeBatchCount < workerCount {
                 activeBatchCount = min(activeBatchCount + workers, workerCount)
@@ -1553,18 +1578,21 @@ final class ScanController {
                 }) else {
                 return ScanPreparation(count: 0, fileLists: [], directFiles: [], skipped: ["Could not enumerate \(target.path)"], skippedCount: 1, reused: 0)
             }
-            for case let url as URL in enumerator {
-                if Task.isCancelled { throw CancellationError() }
-                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isReadableKey, .fileSizeKey, .contentModificationDateKey]),
+            while try autoreleasepool(invoking: {
+                try Task.checkCancellation()
+                guard let item = enumerator.nextObject() else { return false }
+                guard let url = item as? URL,
+                      let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isReadableKey, .fileSizeKey, .contentModificationDateKey]),
                       values.isRegularFile == true,
-                      settings.followSymlinks || values.isSymbolicLink != true else { continue }
+                      settings.followSymlinks || values.isSymbolicLink != true else { return true }
                 guard values.isReadable != false else {
                     skippedCount += 1
                     if skipped.count < 100 { skipped.append("Unreadable: \(url.path)") }
-                    continue
+                    return true
                 }
                 try add(url, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate?.timeIntervalSince1970 ?? 0)
-            }
+                return true
+            }) {}
         }
 
         if stream != nil {
