@@ -23,10 +23,14 @@ struct ScanConsoleView: View {
         if controller.state == .failed { return "Scan could not finish" }
         if controller.state == .counting { return "Preparing inventory" }
         if controller.state == .cancelling { return "Stopping scan" }
+        if controller.scanPaused { return "Scan paused" }
         if controller.state == .scanning { return "Scanning \(URL(fileURLWithPath: controller.scanHistoryTarget).lastPathComponent)" }
         return controller.scanWasCancelled ? "Scan stopped" : controller.state.hasResults ? "Scan results ready" : "Scan"
     }
     private var status: String {
+        if controller.scanPaused {
+            return controller.discoveringFiles ? "File discovery is still running." : "Resume to continue scanning."
+        }
         if controller.state == .counting { return "Building the file inventory. Progress appears when the total is known." }
         if controller.state == .scanning && controller.scanTelemetry.workers.isEmpty { return "Preparing the scanner and loading definitions…" }
         if controller.scanWasCancelled { return "Stopped by you. Completed files remain visible below." }
@@ -176,7 +180,7 @@ struct ScanConsoleView: View {
         VStack(alignment: .leading, spacing: 18) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 12)], alignment: .leading, spacing: 12) {
                 instrument(controller.state == .scanning ? "Live rate (files/s)" : "Last rate (files/s)",
-                           value: rate(controller.scanTelemetry.currentRate))
+                           value: rate(controller.scanPaused ? nil : controller.scanTelemetry.currentRate))
                 instrument("Average (files/s)", value: rate(controller.scanTelemetry.averageRate))
                     .help("Average since scan-client dispatch, excluding scanner startup.")
                 instrument("Peak (files/s)", value: rate(controller.scanTelemetry.peakRate))
@@ -222,7 +226,7 @@ struct ScanConsoleView: View {
                             .frame(height: 5)
                             .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: worker.fraction)
                             .help((worker.latestPath ?? "Waiting for a file result") + "\nWorkers receive another batch when ready.")
-                            Text(controller.scanWasCancelled ? "Stopped" : controller.state == .cancelling ? "Stopping" : worker.exitCode.map { $0 > 1 ? "Issue" : "Done" } ?? "Scanning")
+                            Text(controller.scanWasCancelled ? "Stopped" : controller.state == .cancelling ? "Stopping" : worker.exitCode.map { $0 > 1 ? "Issue" : "Done" } ?? (controller.scanPaused ? "Paused" : "Scanning"))
                                 .font(.caption2).foregroundStyle(worker.exitCode.map { $0 > 1 } == true ? ConsoleStyle.amber : ConsoleStyle.muted)
                                 .frame(width: 48, alignment: .trailing)
                             Text("\(worker.completed.formatted()) / \(worker.queued.formatted())")
@@ -302,6 +306,14 @@ struct ScanConsoleView: View {
     private var scanActions: some View {
         Group {
             if controller.isBusy {
+                if controller.state == .scanning {
+                    Button(controller.scanPaused ? "Resume Scan" : "Pause Scan") {
+                        if controller.scanPaused { controller.resumeScan() }
+                        else { controller.pauseScan() }
+                    }
+                    .disabled(!controller.scanPaused && !controller.canPauseScan)
+                    .buttonStyle(ConsoleActionStyle(color: ConsoleStyle.cyan, filled: true)).controlSize(.large)
+                }
                 Button(controller.state == .cancelling ? "Stopping…" : "Cancel Scan") { controller.cancelScan() }
                     .disabled(controller.state == .cancelling).controlSize(.large)
                     .buttonStyle(ConsoleActionStyle(color: ConsoleStyle.amber)).keyboardShortcut(.cancelAction)
