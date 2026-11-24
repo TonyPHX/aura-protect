@@ -35,6 +35,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.12
+
+[Download 1.2.12](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.12) · [Scan Console guide](https://github.com/TonyPHX/aura-protect/wiki/Scan-Console)
+
+The **Scanner Ready** section collapses automatically when a scan starts, making more room for scan progress and worker activity. You can reopen it during a scan.
+
 ## Aura Protect 1.2.11
 
 [Download 1.2.11](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.11) · [Scan guide](https://github.com/TonyPHX/aura-protect/wiki/Running-a-Scan)
