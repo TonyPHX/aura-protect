@@ -35,6 +35,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.10
+
+[Download 1.2.10](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.10) · [Scan guide](https://github.com/TonyPHX/aura-protect/wiki/Running-a-Scan)
+
+Use **Pause Scan** to suspend inspection while file discovery continues. Choose **Resume Scan** to continue the same scan, or **Cancel Scan** to stop.
+
 ## Aura Protect 1.2.9
 
 [Download 1.2.9](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.9) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
