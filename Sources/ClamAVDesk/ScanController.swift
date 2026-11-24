@@ -81,7 +81,8 @@ final class ScanController {
     var finderService: FinderScanService?
     var scanPresets: [(String, URL)] {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return [("Downloads", home.appendingPathComponent("Downloads")),
+        return [("Home Folder (\(home.lastPathComponent))", home),
+                ("Downloads", home.appendingPathComponent("Downloads")),
                 ("Desktop", home.appendingPathComponent("Desktop")),
                 ("Applications", URL(fileURLWithPath: "/Applications")),
                 ("Entire Disk", URL(fileURLWithPath: "/", isDirectory: true))]
@@ -318,9 +319,13 @@ final class ScanController {
                         }
                     }
                 }
+                let hasBacklog = pipes.contains(where: \.hasBacklog)
                 for (pipe, batch) in zip(pipes, batches) where !batch.isEmpty {
-                    try pipe.openWriter(shouldPause: { readiness.isPaused })
-                    try pipe.submitPaths(batch, shouldPause: { readiness.isPaused || !pipe.isOpen })
+                    if !hasBacklog { try pipe.openWriter(shouldPause: { readiness.isPaused }) }
+                    try pipe.submitPaths(batch, shouldPause: { hasBacklog || readiness.isPaused || !pipe.isOpen })
+                }
+                if pipes.contains(where: \.hasBacklog) {
+                    try ScanInputPipe.drainBacklogs(pipes, shouldPause: { readiness.isPaused })
                 }
                 buffer.removeAll(keepingCapacity: true)
                 bufferedBytes = 0
@@ -351,10 +356,7 @@ final class ScanController {
                 // Keep writers open through a pause, even if discovery found no more paths.
                 repeat {
                     try readiness.waitUntilResumed()
-                    for pipe in pipes {
-                        try pipe.openWriter(shouldPause: { readiness.isPaused })
-                        try pipe.drainBacklog(shouldPause: { readiness.isPaused || !pipe.isOpen })
-                    }
+                    try ScanInputPipe.drainBacklogs(pipes, shouldPause: { readiness.isPaused })
                 } while readiness.isPaused || pipes.contains(where: { !$0.isOpen || $0.hasBacklog })
             } catch is CancellationError {
                 return

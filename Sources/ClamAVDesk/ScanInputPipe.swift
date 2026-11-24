@@ -27,14 +27,19 @@ final class ScanInputPipe {
         while descriptor < 0 {
             try Task.checkCancellation()
             if shouldPause() { return }
-            descriptor = open(url.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
-            if descriptor >= 0 {
-                if fcntl(descriptor, F_SETNOSIGPIPE, 1) == -1 { throw POSIXError(.EIO) }
-            } else {
-                guard errno == ENXIO || errno == EINTR else { throw POSIXError(.EIO) }
-                Thread.sleep(forTimeInterval: 0.01)
-            }
+            if try !tryOpenWriter() { Thread.sleep(forTimeInterval: 0.01) }
         }
+    }
+
+    private func tryOpenWriter() throws -> Bool {
+        if isOpen { return true }
+        descriptor = open(url.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
+        if descriptor >= 0 {
+            guard fcntl(descriptor, F_SETNOSIGPIPE, 1) != -1 else { throw POSIXError(.EIO) }
+            return true
+        }
+        guard errno == ENXIO || errno == EINTR else { throw POSIXError(.EIO) }
+        return false
     }
 
     func writePaths(_ data: Data) throws {
@@ -42,7 +47,6 @@ final class ScanInputPipe {
     }
 
     func submitPaths(_ data: Data, shouldPause: () -> Bool) throws {
-        try drainBacklog(shouldPause: shouldPause)
         let written = hasBacklog ? 0 : try writeAvailable(data, shouldPause: shouldPause)
         guard written < data.count else { return }
         let file: FileHandle
@@ -61,23 +65,37 @@ final class ScanInputPipe {
         try file.write(contentsOf: data.dropFirst(written))
     }
 
-    func drainBacklog(shouldPause: () -> Bool) throws {
-        guard let file = backlog else { return }
-        while !shouldPause() {
+    /// Give each worker one nonblocking turn before feeding any worker again.
+    /// A full FIFO must not delay delivery to other workers.
+    static func drainBacklogs(_ pipes: [ScanInputPipe], shouldPause: () -> Bool) throws {
+        while pipes.contains(where: { !$0.isOpen || $0.hasBacklog }) {
             try Task.checkCancellation()
-            try file.seek(toOffset: backlogReadOffset)
-            guard let chunk = try file.read(upToCount: 32_768), !chunk.isEmpty else {
-                backlog = nil
-                backlogReadOffset = 0
-                return
+            var madeProgress = false
+            for pipe in pipes {
+                if shouldPause() { return }
+                if try pipe.tryOpenWriter(), try pipe.drainChunk(shouldPause: shouldPause) {
+                    madeProgress = true
+                }
             }
-            let written = try writeAvailable(chunk, shouldPause: shouldPause)
-            backlogReadOffset += UInt64(written)
-            if written < chunk.count { return }
+            if !madeProgress { Thread.sleep(forTimeInterval: 0.002) }
         }
     }
 
-    private func writeAvailable(_ data: Data, shouldPause: () -> Bool) throws -> Int {
+    private func drainChunk(shouldPause: () -> Bool) throws -> Bool {
+        guard let file = backlog else { return false }
+        try file.seek(toOffset: backlogReadOffset)
+        guard let chunk = try file.read(upToCount: 32_768), !chunk.isEmpty else {
+            backlog = nil
+            backlogReadOffset = 0
+            return true
+        }
+        let written = try writeAvailable(chunk, waitForSpace: false, shouldPause: shouldPause)
+        backlogReadOffset += UInt64(written)
+        return written > 0
+    }
+
+    private func writeAvailable(_ data: Data, waitForSpace: Bool = true,
+                                shouldPause: () -> Bool) throws -> Int {
         try data.withUnsafeBytes { bytes in
             guard let address = bytes.baseAddress else { return 0 }
             var offset = 0
@@ -88,6 +106,7 @@ final class ScanInputPipe {
                 if written > 0 {
                     offset += written
                 } else if written < 0 && (errno == EAGAIN || errno == EINTR) {
+                    if !waitForSpace { break }
                     Thread.sleep(forTimeInterval: 0.002)
                 } else {
                     throw POSIXError(.EIO)
