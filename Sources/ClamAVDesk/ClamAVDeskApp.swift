@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct ClamAVDeskApp: App {
+    @NSApplicationDelegateAdaptor(ScanDiagnosticsDelegate.self) private var diagnostics
     @State private var controller = ScanController()
 
     init() {
@@ -16,6 +17,7 @@ struct ClamAVDeskApp: App {
         WindowGroup {
             ContentView()
                 .environment(controller)
+                .onAppear { diagnostics.controller = controller }
                 .onOpenURL { controller.queueScans([$0]) }
                 .frame(minWidth: 820, minHeight: 620)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -26,6 +28,9 @@ struct ClamAVDeskApp: App {
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .help) {
+                Button("Open Diagnostics Folder") { diagnostics.reveal() }
+            }
         }
         Settings {
             SettingsView()
