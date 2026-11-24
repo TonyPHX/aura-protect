@@ -35,6 +35,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.9
+
+[Download 1.2.9](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.9) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
+
+Scan History has controls for saving future results and clearing existing entries. History labels failed scans and reports local storage errors. The American flag stays visible in About & Licenses, with fireworks after the first completed scan.
+
 ## Aura Protect 1.2.8
 
 [Download 1.2.8](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.8) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
