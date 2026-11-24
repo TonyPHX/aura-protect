@@ -1,3 +1,13 @@
+# Aura Protect 1.2.10 release verification
+
+[GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.10) · [Wiki release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes).
+
+- Tag v1.2.10 points to source commit `acd7f298c82cadaf6cfa2c4e29362638bce13c1a` from PR #11.
+- The extracted app reports 1.2.10, includes arm64 and x86_64, passed deep and strict signature verification, and bundles ClamAV 1.5.5.
+- GitHub reports ZIP SHA-256 `7af9e354425ef6c7387c7c0dad0352e229dd39ac79df7701a7e11b4532980094`, matching the verified local ZIP. The companion checksum file is published.
+- Twenty tests passed. The pause regression verified queued input order after resume. The real parallel ClamAV integration test could not start its daemon in the test environment. Intel was cross-compiled.
+- The wiki documents pause and resume, updates current guides and navigation, and keeps older version details in historical pages.
+
 # Aura Protect 1.2.9 release verification
 
 [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.9) · [Wiki release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes).
