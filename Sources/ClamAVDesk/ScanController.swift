@@ -24,6 +24,11 @@ final class ScanController {
     var summary = ScanSummary()
     var scanTelemetry = ScanTelemetry()
     var scanWasCancelled = false
+    private(set) var scanPaused = false
+    private var pausedScanProcesses: [Process] = []
+    var canPauseScan: Bool {
+        state == .scanning && inputReadiness?.isReady == true && !scanTelemetry.workers.isEmpty
+    }
     private var telemetryWorkers: [ObjectIdentifier: Int] = [:]
     private var queueFileCounts: [URL: Int] = [:]
     var liveScanErrors: Int { max(scanErrorCount, summary.errors, state == .failed ? 1 : 0) }
@@ -296,7 +301,6 @@ final class ScanController {
                     guard !inputs.isEmpty else { throw POSIXError(.EIO) }
                     pipes = inputs.map(ScanInputPipe.init(url:))
                     initializeCacheOnMainThread()
-                    for pipe in pipes { try pipe.openWriter() }
                 }
                 guard !buffer.isEmpty else { return }
                 var batches = Array(repeating: Data(), count: pipes.count)
@@ -314,7 +318,10 @@ final class ScanController {
                         }
                     }
                 }
-                for (pipe, batch) in zip(pipes, batches) where !batch.isEmpty { try pipe.writePaths(batch) }
+                for (pipe, batch) in zip(pipes, batches) where !batch.isEmpty {
+                    try pipe.openWriter(shouldPause: { readiness.isPaused })
+                    try pipe.submitPaths(batch, shouldPause: { readiness.isPaused || !pipe.isOpen })
+                }
                 buffer.removeAll(keepingCapacity: true)
                 bufferedBytes = 0
             }
@@ -341,8 +348,18 @@ final class ScanController {
                 let walkDuration = max(ProcessInfo.processInfo.systemUptime - walkStarted - deliveryTime, 0)
                 try flush()
                 await self?.completeDiscovery(result, generation: generation, walkDuration: walkDuration, deliveryTime: deliveryTime)
+                // Keep writers open through a pause, even if discovery found no more paths.
+                repeat {
+                    try readiness.waitUntilResumed()
+                    for pipe in pipes {
+                        try pipe.openWriter(shouldPause: { readiness.isPaused })
+                        try pipe.drainBacklog(shouldPause: { readiness.isPaused || !pipe.isOpen })
+                    }
+                } while readiness.isPaused || pipes.contains(where: { !$0.isOpen || $0.hasBacklog })
+            } catch is CancellationError {
+                return
             } catch {
-                await self?.completeDiscovery(nil, generation: generation)
+                await self?.scanInputFailed(generation: generation)
             }
         }
         if let daemon, let client {
@@ -379,11 +396,53 @@ final class ScanController {
         refreshTiming()
     }
 
+    private func scanInputFailed(generation: UUID) {
+        guard scanGeneration == generation, state == .scanning else { return }
+        if discoveringFiles {
+            completeDiscovery(nil, generation: generation)
+        } else {
+            scanErrorCount += 1
+            appendConcern("Scanner input could not be delivered. Scan coverage could not be confirmed.")
+        }
+        resumeScan()
+        if scanProcess?.isRunning == true { scanProcess?.terminate() }
+        scanProcesses.filter(\.isRunning).forEach { $0.terminate() }
+    }
+
+    func pauseScan() {
+        guard canPauseScan, !scanPaused, let inputReadiness else { return }
+        let processes = ([daemonProcess, scanProcess].compactMap { $0 } + scanProcesses).filter(\.isRunning)
+        guard !processes.isEmpty else { return }
+        inputReadiness.setPaused(true)
+        for process in processes {
+            if kill(process.processIdentifier, SIGSTOP) == 0 {
+                pausedScanProcesses.append(process)
+            } else if errno != ESRCH {
+                resumeScan()
+                appendConcern("The scanner could not be paused.")
+                return
+            }
+        }
+        scanPaused = !pausedScanProcesses.isEmpty
+        if !scanPaused { inputReadiness.setPaused(false) }
+        estimatedRemaining = nil
+    }
+
+    func resumeScan() {
+        for process in pausedScanProcesses where process.isRunning {
+            _ = kill(process.processIdentifier, SIGCONT)
+        }
+        pausedScanProcesses.removeAll()
+        scanPaused = false
+        inputReadiness?.setPaused(false)
+    }
+
     func cancelScan() {
         guard isBusy else { return }
         state = .cancelling
         scanTask?.cancel()
         inventoryTask?.cancel()
+        resumeScan()
         scanProcess?.interrupt()
         scanProcesses.forEach { $0.interrupt() }
         daemonProcess?.interrupt()
@@ -1034,15 +1093,16 @@ final class ScanController {
     private func refreshTiming() {
         guard let startTime else { return }
         elapsed = Date().timeIntervalSince(startTime)
-        if state == .scanning {
+        if state == .scanning, !scanPaused {
             scanTelemetry.sample(completed: processedFiles, now: ProcessInfo.processInfo.systemUptime)
         }
-        guard !discoveringFiles, processedFiles > 0, totalFiles > processedFiles else { estimatedRemaining = nil; return }
+        guard !scanPaused, !discoveringFiles, processedFiles > 0, totalFiles > processedFiles else { estimatedRemaining = nil; return }
         estimatedRemaining = elapsed / Double(processedFiles) * Double(totalFiles - processedFiles)
     }
 
     private func finishScan(exitCode: Int32) {
         guard isBusy else { return }
+        resumeScan()
         let remainingLines: [(String, Int)] = [(outputBuffer, 0)] + parallelOutputBuffers.map { ($0.value, telemetryWorkers[$0.key] ?? 0) }
         for (line, worker) in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
             recordFirstResult()
