@@ -26,7 +26,8 @@ extension ScanController {
                              incomplete: summary.incompleteFiles, detections: detections,
                              duration: summary.duration, mode: scanMode, workers: scanWorkers, engine: clamVersion, detectionDetails: detectionNames,
                              preparationDuration: summary.preparationDuration, startupDuration: summary.startupDuration,
-                             matchingDuration: summary.matchingDuration), at: 0)
+                             matchingDuration: summary.matchingDuration, inputDeliveryDuration: summary.inputDeliveryDuration,
+                             firstResultDuration: summary.firstResultDuration), at: 0)
         history = Array(history.prefix(100))
         do {
             try JSONEncoder().encode(history).write(to: Self.historyURL, options: .atomic)

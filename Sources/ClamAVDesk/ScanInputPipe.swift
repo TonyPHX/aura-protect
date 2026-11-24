@@ -50,3 +50,33 @@ final class ScanInputPipe {
         }
     }
 }
+
+/// Delivers the selected inputs once startup chooses parallel workers or single-process fallback.
+final class ScanInputReadiness: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var inputs: [URL]?
+
+    func publish(_ inputs: [URL]) {
+        condition.lock()
+        self.inputs = inputs
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var isReady: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return inputs != nil
+    }
+
+    func waitForInputs() throws -> [URL] {
+        condition.lock()
+        defer { condition.unlock() }
+        while inputs == nil {
+            try Task.checkCancellation()
+            _ = condition.wait(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        try Task.checkCancellation()
+        return inputs ?? []
+    }
+}

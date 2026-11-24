@@ -45,7 +45,7 @@ struct ScanSettings: Codable, Equatable, Sendable {
     var scheduledTarget = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
     var parallelScanning = true
     var automaticWorkerTuning = true
-    var incrementalScanning = false
+    var incrementalScanning = true
     var workerCount = min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
     var recursive = true
     var scanArchives = true
@@ -66,7 +66,7 @@ struct ScanSettings: Codable, Equatable, Sendable {
         scheduledTarget = try values.decodeIfPresent(String.self, forKey: .scheduledTarget) ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
         parallelScanning = try values.decodeIfPresent(Bool.self, forKey: .parallelScanning) ?? true
         automaticWorkerTuning = try values.decodeIfPresent(Bool.self, forKey: .automaticWorkerTuning) ?? true
-        incrementalScanning = try values.decodeIfPresent(Bool.self, forKey: .incrementalScanning) ?? false
+        incrementalScanning = try values.decodeIfPresent(Bool.self, forKey: .incrementalScanning) ?? true
         workerCount = try values.decodeIfPresent(Int.self, forKey: .workerCount) ?? min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
         recursive = try values.decodeIfPresent(Bool.self, forKey: .recursive) ?? true
         scanArchives = try values.decodeIfPresent(Bool.self, forKey: .scanArchives) ?? true
@@ -103,6 +103,8 @@ struct ScanSummary: Equatable {
     var preparationDuration: TimeInterval = 0
     var startupDuration: TimeInterval = 0
     var matchingDuration: TimeInterval = 0
+    var inputDeliveryDuration: TimeInterval? = nil
+    var firstResultDuration: TimeInterval? = nil
 }
 
 struct SignatureCategory: Codable, Equatable, Identifiable {
@@ -152,6 +154,8 @@ struct ScanHistoryEntry: Codable, Identifiable {
     var preparationDuration: TimeInterval? = nil
     var startupDuration: TimeInterval? = nil
     var matchingDuration: TimeInterval? = nil
+    var inputDeliveryDuration: TimeInterval? = nil
+    var firstResultDuration: TimeInterval? = nil
 }
 
 enum OutputParser {

@@ -3,6 +3,28 @@ import Testing
 @testable import ClamAVDesk
 
 struct ScanPerformanceTests {
+    @Test func cleanFileReuseDefaultsOnAndPreservesOptOut() throws {
+        #expect(ScanSettings().incrementalScanning)
+        let decoder = JSONDecoder()
+        #expect(try decoder.decode(ScanSettings.self, from: Data("{}".utf8)).incrementalScanning)
+        let saved = Data(#"{"incrementalScanning":false}"#.utf8)
+        #expect(try !decoder.decode(ScanSettings.self, from: saved).incrementalScanning)
+    }
+
+    @Test func inventoryInputHandoffSupportsFallbackAndCancellation() async throws {
+        let readiness = ScanInputReadiness()
+        #expect(!readiness.isReady)
+        let waiting = Task.detached { try readiness.waitForInputs() }
+        let fallback = URL(fileURLWithPath: "/fallback-input")
+        readiness.publish([fallback])
+        #expect(try await waiting.value == [fallback])
+
+        let unstarted = ScanInputReadiness()
+        let cancelled = Task.detached { try unstarted.waitForInputs() }
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+    }
+
     private func fixture() throws -> URL {
         let root = URL(fileURLWithPath: "/private/tmp/aura-tests-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

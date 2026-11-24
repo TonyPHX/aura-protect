@@ -91,13 +91,16 @@ final class ScanController {
     private(set) var hasUnlockedCompletionFlag = false
     var flagFireworksStartedAt: Date?
     private var streamingInventory = false
-    private var beginInventoryFeed: (([URL]) -> Void)?
+    private var inputReadiness: ScanInputReadiness?
     private var inventoryTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var startTime: Date?
     private var inventoryFinishedAt: Date?
     private var preparationDuration: TimeInterval = 0
     private var startupDuration: TimeInterval = 0
+    private var inputDeliveryDuration: TimeInterval?
+    private var firstResultDuration: TimeInterval?
+    private var scanStartedUptime: TimeInterval?
     private var recordsHistory = true
     private var timer: Timer?
     private var outputBuffer = ""
@@ -226,6 +229,7 @@ final class ScanController {
         resetScan()
         state = .counting
         startTime = .now
+        scanStartedUptime = ProcessInfo.processInfo.systemUptime
         timer = .scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshTiming() }
         }
@@ -262,37 +266,82 @@ final class ScanController {
 
         discoveringFiles = true
         streamingInventory = true
-        beginInventoryFeed = { [weak self] inputs in
-            guard let self else { return }
-            self.beginInventoryFeed = nil
-            self.inventoryTask = Task.detached(priority: currentSettings.scanMode == .quiet ? .utility : .userInitiated) { [weak self] in
-                let pipes = inputs.map(ScanInputPipe.init(url:))
-                defer { pipes.forEach { $0.closeWriter() } }
-                let key = currentSettings.incrementalScanning
-                    ? (try? ScanCacheContext.key(engine: executable, version: installedVersion,
-                                                database: Self.databaseDirectory, settings: currentSettings)) ?? UUID().uuidString
-                    : ""
-                let cache = key == previousKey ? previousCache : [:]
-                await self?.initializeStreamingCache(key: key, cache: cache, generation: generation)
-                do {
-                    for pipe in pipes { try pipe.openWriter() }
-                    var next = 0
-                    let result = try Self.prepareScanFileList(at: target, settings: currentSettings, cache: cache,
-                        stream: { data, path, stamp in
-                            if let stamp {
-                                DispatchQueue.main.sync { [weak self] in
-                                    MainActor.assumeIsolated {
-                                        if self?.scanGeneration == generation { self?.preScanStamps[path] = stamp }
-                                    }
-                                }
-                            }
-                            try pipes[next].writePaths(data)
-                            next = (next + 1) % pipes.count
-                        })
-                    await self?.completeDiscovery(result, generation: generation)
-                } catch {
-                    await self?.completeDiscovery(nil, generation: generation)
+        let readiness = ScanInputReadiness()
+        inputReadiness = readiness
+        inventoryTask = Task.detached(priority: currentSettings.scanMode == .quiet ? .utility : .userInitiated) { [weak self] in
+            let key = currentSettings.incrementalScanning
+                ? (try? ScanCacheContext.key(engine: executable, version: installedVersion,
+                                            database: Self.databaseDirectory, settings: currentSettings)) ?? UUID().uuidString
+                : ""
+            let cache = key == previousKey ? previousCache : [:]
+            let walkStarted = ProcessInfo.processInfo.systemUptime
+            var deliveryTime: TimeInterval = 0
+            var pipes: [ScanInputPipe] = []
+            var buffer: [(data: Data, path: String, stamp: CleanFileStamp?)] = []
+            var bufferedBytes = 0
+            var next = 0
+            var lastFlush = walkStarted
+            defer { pipes.forEach { $0.closeWriter() } }
+
+            func flush() throws {
+                let started = ProcessInfo.processInfo.systemUptime
+                defer {
+                    lastFlush = ProcessInfo.processInfo.systemUptime
+                    deliveryTime += lastFlush - started
                 }
+                try Task.checkCancellation()
+                if pipes.isEmpty {
+                    let inputs = try readiness.waitForInputs()
+                    guard !inputs.isEmpty else { throw POSIXError(.EIO) }
+                    pipes = inputs.map(ScanInputPipe.init(url:))
+                    initializeCacheOnMainThread()
+                    for pipe in pipes { try pipe.openWriter() }
+                }
+                guard !buffer.isEmpty else { return }
+                var batches = Array(repeating: Data(), count: pipes.count)
+                var stamps: [String: CleanFileStamp] = [:]
+                for entry in buffer {
+                    if let stamp = entry.stamp { stamps[entry.path] = stamp }
+                    batches[next].append(entry.data)
+                    next = (next + 1) % pipes.count
+                }
+                if !stamps.isEmpty {
+                    DispatchQueue.main.sync { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self, self.scanGeneration == generation, self.state == .scanning else { return }
+                            self.preScanStamps.merge(stamps) { _, newest in newest }
+                        }
+                    }
+                }
+                for (pipe, batch) in zip(pipes, batches) where !batch.isEmpty { try pipe.writePaths(batch) }
+                buffer.removeAll(keepingCapacity: true)
+                bufferedBytes = 0
+            }
+
+            func initializeCacheOnMainThread() {
+                DispatchQueue.main.sync { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.initializeStreamingCache(key: key, cache: cache, generation: generation)
+                    }
+                }
+            }
+
+            do {
+                let result = try Self.prepareScanFileList(at: target, settings: currentSettings, cache: cache,
+                    stream: { data, path, stamp in
+                        buffer.append((data, path, stamp))
+                        bufferedBytes += data.count
+                        let readyForFirstBatch = pipes.isEmpty && readiness.isReady
+                        let batchIsDue = !pipes.isEmpty && ProcessInfo.processInfo.systemUptime - lastFlush >= 0.01
+                        if readyForFirstBatch || batchIsDue || buffer.count >= 64 || bufferedBytes >= 32_768 {
+                            try flush()
+                        }
+                    })
+                let walkDuration = max(ProcessInfo.processInfo.systemUptime - walkStarted - deliveryTime, 0)
+                try flush()
+                await self?.completeDiscovery(result, generation: generation, walkDuration: walkDuration, deliveryTime: deliveryTime)
+            } catch {
+                await self?.completeDiscovery(nil, generation: generation)
             }
         }
         if let daemon, let client {
@@ -310,11 +359,13 @@ final class ScanController {
         pendingCache = cache
     }
 
-    private func completeDiscovery(_ result: ScanPreparation?, generation: UUID) {
+    private func completeDiscovery(_ result: ScanPreparation?, generation: UUID,
+                                   walkDuration: TimeInterval? = nil, deliveryTime: TimeInterval? = nil) {
         guard scanGeneration == generation, state == .scanning else { return }
         discoveringFiles = false
         inventoryFinishedAt = .now
-        preparationDuration = max(Date().timeIntervalSince(startTime ?? .now) - startupDuration, 0)
+        preparationDuration = walkDuration ?? 0
+        inputDeliveryDuration = deliveryTime
         if let result {
             totalFiles = result.count
             skippedFileDetails = result.skipped
@@ -526,7 +577,9 @@ final class ScanController {
         Files skipped by limits or access: \(summary.skippedFiles.formatted())
         Unchanged clean files reused: \(summary.reusedFiles.formatted())
         Duration: \(String(format: "%.1f seconds", summary.duration))
-        Inventory discovery (may overlap scanning): \(String(format: "%.1f seconds", summary.preparationDuration))
+        Inventory discovery (excluding input delivery): \(String(format: "%.1f seconds", summary.preparationDuration))
+        Scanner input delivery (including waits): \(summary.inputDeliveryDuration.map { String(format: "%.3f seconds", $0) } ?? "—")
+        Time to first file result: \(summary.firstResultDuration.map { String(format: "%.3f seconds", $0) } ?? "—")
         Scanner startup: \(String(format: "%.1f seconds", summary.startupDuration))
         File scanning: \(String(format: "%.1f seconds", summary.matchingDuration))
         Average throughput: \(throughput)
@@ -709,7 +762,7 @@ final class ScanController {
         do { try process.run() }
         catch { fail("Unable to start ClamAV: \(error.localizedDescription)"); return }
         observeScanProcess(process, pipe: pipe)
-        beginInventoryFeed?([fileList])
+        inputReadiness?.publish([fileList])
     }
 
     private func launchParallelScan(daemon: URL, client: URL, fileLists: [URL], directFiles: [URL],
@@ -817,7 +870,7 @@ final class ScanController {
         for worker in 0..<workerCount {
             guard launchNextBatch(worker: worker) else { return }
         }
-        beginInventoryFeed?(fileLists)
+        inputReadiness?.publish(fileLists)
     }
 
     @discardableResult
@@ -933,6 +986,7 @@ final class ScanController {
                 if OutputParser.isGenuineError(line) { appendConcern(line) }
                 continue
             }
+            recordFirstResult()
             processedFiles += 1
             if let source { batchCompletedCounts[source, default: 0] += 1 }
             if let path = OutputParser.resultPath(line) {
@@ -971,6 +1025,11 @@ final class ScanController {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    private func recordFirstResult() {
+        guard firstResultDuration == nil, let scanStartedUptime else { return }
+        firstResultDuration = ProcessInfo.processInfo.systemUptime - scanStartedUptime
+    }
+
     private func refreshTiming() {
         guard let startTime else { return }
         elapsed = Date().timeIntervalSince(startTime)
@@ -985,6 +1044,7 @@ final class ScanController {
         guard isBusy else { return }
         let remainingLines: [(String, Int)] = [(outputBuffer, 0)] + parallelOutputBuffers.map { ($0.value, telemetryWorkers[$0.key] ?? 0) }
         for (line, worker) in remainingLines where !line.isEmpty && OutputParser.isFileResult(line) {
+            recordFirstResult()
             processedFiles += 1
             if let path = OutputParser.resultPath(line) {
                 scanTelemetry.report(path: path, worker: worker, completed: true)
@@ -1023,8 +1083,13 @@ final class ScanController {
         }
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
         scanFileListURLs = []
+        if discoveringFiles && state != .cancelling {
+            scanErrorCount += 1
+            appendConcern("The scanner exited before discovery completed. Scan coverage could not be confirmed.")
+        }
+        inventoryTask?.cancel()
         discoveringFiles = false
-        beginInventoryFeed = nil
+        inputReadiness = nil
         if state == .cancelling {
             scanWasCancelled = true
             state = .idle
@@ -1042,7 +1107,8 @@ final class ScanController {
                         errors: max(scanErrorCount, finalCode > 1 ? 1 : 0),
                         skippedFiles: skippedFileCount, incompleteFiles: incompletePaths.count, reusedFiles: reusedFileCount, duration: elapsed,
                         preparationDuration: preparationDuration, startupDuration: startupDuration,
-                        matchingDuration: max(elapsed - startupDuration - (streamingInventory ? 0 : preparationDuration), 0))
+                        matchingDuration: max(elapsed - startupDuration - (streamingInventory ? 0 : preparationDuration), 0),
+                        inputDeliveryDuration: inputDeliveryDuration, firstResultDuration: firstResultDuration)
         scanCompletedAt = Date()
         progress = 1
         state = incompletePaths.isEmpty && skippedFileCount == 0 ? ScanState.completionState(exitCode: finalCode, processedFiles: processedFiles) : .finishedWithIssues
@@ -1061,7 +1127,7 @@ final class ScanController {
 
     private func resetScan() {
         scanGeneration = UUID()
-        discoveringFiles = false; streamingInventory = false; beginInventoryFeed = nil
+        discoveringFiles = false; streamingInventory = false; inputReadiness = nil
         scanTelemetry = .init()
         scanWasCancelled = false
         telemetryWorkers = [:]
@@ -1070,6 +1136,8 @@ final class ScanController {
         inventoryTask?.cancel()
         timer?.invalidate()
         inventoryFinishedAt = nil; preparationDuration = 0; startupDuration = 0
+        inputDeliveryDuration = nil; firstResultDuration = nil; scanStartedUptime = nil
+        preScanStamps.removeAll()
         processedFiles = 0; totalFiles = 0; progress = 0; elapsed = 0
         estimatedRemaining = nil; detections = []; detectionStamps = [:]; detectionNames = [:]; incompletePaths = []; incompleteReasons = [:]; summary = .init()
         scanCompletedAt = nil
@@ -1095,7 +1163,7 @@ final class ScanController {
         timer?.invalidate(); timer = nil
         inventoryTask?.cancel()
         discoveringFiles = false
-        beginInventoryFeed = nil
+        inputReadiness = nil
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
         scanFileListURLs = []
         state = .failed; log = message
@@ -1125,10 +1193,11 @@ final class ScanController {
     private func updateIncrementalCache(path: String, from line: String) {
         guard scanUsesIncrementalCache else { return }
         if line.hasSuffix(" FOUND") || line.contains(" ERROR") {
+            preScanStamps.removeValue(forKey: path)
             pendingCache.removeValue(forKey: path)
             return
         }
-        guard let original = preScanStamps[path],
+        guard let original = preScanStamps.removeValue(forKey: path),
               let current = CleanFileStamp.read(URL(fileURLWithPath: path)), current == original else {
             pendingCache.removeValue(forKey: path)
             return

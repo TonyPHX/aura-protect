@@ -34,7 +34,7 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("Reuse unchanged clean files", isOn: $controller.settings.incrementalScanning)
-                Text("Optional incremental mode reuses clean results only while Aura Protect remains open, verifies file contents and resets whenever scan options, the engine, or any definition file changes. Turn it off for a fresh full scan.")
+                Text("Reuse lasts while Aura Protect is open. The scanner verifies file contents and refreshes its cache when scan options, the engine, or definitions change. Turn reuse off to scan every eligible file again.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Scan folders recursively", isOn: $controller.settings.recursive)
                 Toggle("Inspect archives", isOn: $controller.settings.scanArchives)

@@ -64,6 +64,14 @@ struct HistoryView: View {
                                 Text(String(format: "Preparation %.1fs · Startup %.1fs · Scanning %.1fs", preparation, startup, matching))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                            if let delivery = item.inputDeliveryDuration {
+                                Text(String(format: "Input delivery (including waits) %.2fs", delivery))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if let firstResult = item.firstResultDuration {
+                                Text(String(format: "First file result %.2fs", firstResult))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             ForEach(item.detections, id: \.self) { path in
                                 Text(path + (item.detectionDetails?[path].map { " — " + $0 } ?? "")).foregroundStyle(.red).textSelection(.enabled)
                             }

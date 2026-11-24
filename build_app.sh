@@ -29,7 +29,7 @@ plutil -insert CFBundleName -string "Aura Protect" "$APP_DIR/Contents/Info.plist
 plutil -insert CFBundleDisplayName -string "Aura Protect" "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundleIconFile -string AuraProtectIcon.icns "$APP_DIR/Contents/Info.plist"
 plutil -insert CFBundlePackageType -string APPL "$APP_DIR/Contents/Info.plist"
-plutil -insert CFBundleShortVersionString -string 1.2.7 "$APP_DIR/Contents/Info.plist"
+plutil -insert CFBundleShortVersionString -string 1.2.8 "$APP_DIR/Contents/Info.plist"
 ENGINE_VERSION="$("$ROOT_DIR/Vendor/ClamAV/bin/clamscan" --version)"
 ENGINE_VERSION="${ENGINE_VERSION%%/*}"
 plutil -insert ClamAVEngineVersion -string "${ENGINE_VERSION#ClamAV }" "$APP_DIR/Contents/Info.plist"
