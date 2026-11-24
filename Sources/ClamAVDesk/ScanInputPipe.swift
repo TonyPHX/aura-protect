@@ -35,7 +35,10 @@ final class ScanInputPipe {
         if isOpen { return true }
         descriptor = open(url.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
         if descriptor >= 0 {
-            guard fcntl(descriptor, F_SETNOSIGPIPE, 1) != -1 else { throw POSIXError(.EIO) }
+            guard fcntl(descriptor, F_SETNOSIGPIPE, 1) != -1 else {
+                closeWriter()
+                throw POSIXError(.EIO)
+            }
             return true
         }
         guard errno == ENXIO || errno == EINTR else { throw POSIXError(.EIO) }
@@ -61,8 +64,10 @@ final class ScanInputPipe {
             try FileManager.default.removeItem(at: temporary)
             backlog = file
         }
-        _ = try file.seekToEnd()
-        try file.write(contentsOf: data.dropFirst(written))
+        try autoreleasepool {
+            _ = try file.seekToEnd()
+            try file.write(contentsOf: data.dropFirst(written))
+        }
     }
 
     /// Give each worker one nonblocking turn before feeding any worker again.
@@ -73,7 +78,7 @@ final class ScanInputPipe {
             var madeProgress = false
             for pipe in pipes {
                 if shouldPause() { return }
-                if try pipe.tryOpenWriter(), try pipe.drainChunk(shouldPause: shouldPause) {
+                if try pipe.tryOpenWriter(), try autoreleasepool(invoking: { try pipe.drainChunk(shouldPause: shouldPause) }) {
                     madeProgress = true
                 }
             }
