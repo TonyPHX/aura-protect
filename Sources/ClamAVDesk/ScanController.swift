@@ -91,6 +91,7 @@ final class ScanController {
 
     private var scanGeneration = UUID()
     private var scanProcess: Process?
+    @ObservationIgnored private var scanOutputTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     private var scanProcesses: [Process] = []
     private var daemonProcess: Process?
     private var updateProcess: Process?
@@ -131,6 +132,7 @@ final class ScanController {
     private var incrementalCacheKey = ""
     private var preScanStamps: [String: CleanFileStamp] = [:]
     private var pendingCache: [String: CleanFileStamp] = [:]
+    private var cacheVerificationIDs: [String: UUID] = [:]
     private var reusedFileCount = 0
     private var scanUsesIncrementalCache = false
 
@@ -444,6 +446,7 @@ final class ScanController {
         state = .cancelling
         scanTask?.cancel()
         inventoryTask?.cancel()
+        scanOutputTasks.values.forEach { $0.cancel() }
         resumeScan()
         scanProcess?.interrupt()
         scanProcesses.forEach { $0.interrupt() }
@@ -971,28 +974,61 @@ final class ScanController {
     private func observeScanProcess(_ process: Process, pipe: Pipe, source: ObjectIdentifier? = nil,
                                     directFile: URL? = nil, parallel: Bool = false) {
         let generation = scanGeneration
-        Task.detached { [weak self] in
+        let processID = ObjectIdentifier(process)
+        scanOutputTasks[processID] = Task.detached(priority: .utility) { [weak self] in
+            func verifyResults(_ text: String) async {
+                guard let batch = await self?.receiveScanData(text, source: source, generation: generation),
+                      !batch.clean.isEmpty || !batch.detections.isEmpty else { return }
+                // One bounded output batch per client. Await its verification before reading more output.
+                let clean = batch.clean.filter { path, original in
+                    !Task.isCancelled && CleanFileStamp.read(URL(fileURLWithPath: path)) == original
+                }
+                let detected = batch.detections.reduce(into: [String: CleanFileStamp]()) { stamps, path in
+                    if !Task.isCancelled { stamps[path] = CleanFileStamp.read(URL(fileURLWithPath: path)) }
+                }
+                await self?.applyVerification(batch, clean: clean, detected: detected, generation: generation)
+            }
+
             while true {
                 let data = pipe.fileHandleForReading.availableData
                 guard !data.isEmpty else { break }
-                await self?.receiveScanData(String(decoding: data, as: UTF8.self), source: source, generation: generation)
+                await verifyResults(String(decoding: data, as: UTF8.self))
             }
             process.waitUntilExit()
+            await verifyResults("\n")
+            await self?.removeScanOutputTask(processID)
             await self?.scanProcessEnded(process.terminationStatus, directFile: directFile,
                                          parallel: parallel, source: source, generation: generation)
         }
     }
 
-    private func receiveScanData(_ text: String, source: ObjectIdentifier?, generation: UUID) {
+    private func removeScanOutputTask(_ id: ObjectIdentifier) {
+        scanOutputTasks.removeValue(forKey: id)
+    }
+
+    private struct VerificationBatch: Sendable {
+        let id = UUID()
+        var clean: [String: CleanFileStamp] = [:]
+        var detections: [String] = []
+    }
+
+    private func receiveScanData(_ text: String, source: ObjectIdentifier?, generation: UUID) -> VerificationBatch? {
+        guard scanGeneration == generation, state == .scanning else { return nil }
+        return consume(text, source: source)
+    }
+
+    private func applyVerification(_ batch: VerificationBatch, clean: [String: CleanFileStamp],
+                                   detected: [String: CleanFileStamp], generation: UUID) {
         guard scanGeneration == generation, state == .scanning else { return }
-        consume(text, source: source)
+        for path in batch.clean.keys where cacheVerificationIDs[path] == batch.id {
+            cacheVerificationIDs.removeValue(forKey: path)
+            pendingCache[path] = clean[path]
+        }
+        detectionStamps.merge(detected) { original, _ in original }
     }
 
     private func scanProcessEnded(_ code: Int32, directFile: URL?, parallel: Bool, source: ObjectIdentifier?, generation: UUID) {
         guard scanGeneration == generation, isBusy else { return }
-        if let source, let tail = parallelOutputBuffers[source], !tail.isEmpty {
-            consume("\n", source: source)
-        }
         var completionCode = code
         if discoveringFiles && state == .scanning {
             discoveringFiles = false
@@ -1033,7 +1069,8 @@ final class ScanController {
         }
     }
 
-    private func consume(_ text: String, source: ObjectIdentifier? = nil) {
+    private func consume(_ text: String, source: ObjectIdentifier?) -> VerificationBatch {
+        var batch = VerificationBatch()
         var buffer = source.flatMap { parallelOutputBuffers[$0] } ?? outputBuffer
         buffer += text
         let lines = buffer.components(separatedBy: .newlines)
@@ -1055,14 +1092,14 @@ final class ScanController {
                 let worker = source.flatMap { telemetryWorkers[$0] } ?? 0
                 if streamingInventory { scanTelemetry.assign(files: 1, to: worker) }
                 scanTelemetry.report(path: path, worker: worker, completed: true)
-                updateIncrementalCache(path: path, from: line)
+                collectCacheVerification(path: path, from: line, batch: &batch)
             }
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if OutputParser.isIncomplete(line) {
                 recordIncomplete(line, target: source.flatMap { directScanTargets[$0]?.path })
             } else if let path = (OutputParser.infectionPath(line).map { parsed in source.flatMap { directScanTargets[$0]?.path } ?? parsed }), !detections.contains(path) {
                 detections.append(path)
-                detectionStamps[path] = CleanFileStamp.read(URL(fileURLWithPath: path))
+                batch.detections.append(path)
                 detectionNames[path] = line.components(separatedBy: ": ").last?.replacingOccurrences(of: " FOUND", with: "")
             } else if OutputParser.isGenuineError(line) {
                 appendConcern(line)
@@ -1070,6 +1107,7 @@ final class ScanController {
         }
         progress = totalFiles > 0 ? min(Double(processedFiles) / Double(totalFiles), 0.99) : 0
         refreshTiming()
+        return batch
     }
 
     private func recordIncomplete(_ line: String, target: String? = nil) {
@@ -1111,7 +1149,6 @@ final class ScanController {
             processedFiles += 1
             if let path = OutputParser.resultPath(line) {
                 scanTelemetry.report(path: path, worker: worker, completed: true)
-                updateIncrementalCache(path: path, from: line)
             }
             if line.contains(" ERROR") { scanErrorCount += 1 }
             if OutputParser.isIncomplete(line) {
@@ -1190,6 +1227,8 @@ final class ScanController {
 
     private func resetScan() {
         scanGeneration = UUID()
+        scanOutputTasks.values.forEach { $0.cancel() }
+        scanOutputTasks.removeAll()
         discoveringFiles = false; streamingInventory = false; inputReadiness = nil
         scanTelemetry = .init()
         scanWasCancelled = false
@@ -1217,7 +1256,7 @@ final class ScanController {
         scanErrorCount = 0
         daemonOutputBuffer = ""
         skippedFileDetails = []; skippedFileCount = 0; reusedFileCount = 0
-        pendingCache = [:]; scanUsesIncrementalCache = false
+        pendingCache = [:]; cacheVerificationIDs = [:]; scanUsesIncrementalCache = false
     }
 
     private func fail(_ message: String) {
@@ -1262,19 +1301,15 @@ final class ScanController {
         if log.count > 100_000 { log.removeFirst(log.count - 80_000) }
     }
 
-    private func updateIncrementalCache(path: String, from line: String) {
+    private func collectCacheVerification(path: String, from line: String, batch: inout VerificationBatch) {
         guard scanUsesIncrementalCache else { return }
-        if line.hasSuffix(" FOUND") || line.contains(" ERROR") {
-            preScanStamps.removeValue(forKey: path)
-            pendingCache.removeValue(forKey: path)
-            return
-        }
-        guard let original = preScanStamps.removeValue(forKey: path),
-              let current = CleanFileStamp.read(URL(fileURLWithPath: path)), current == original else {
-            pendingCache.removeValue(forKey: path)
-            return
-        }
-        pendingCache[path] = current
+        let original = preScanStamps.removeValue(forKey: path)
+        pendingCache.removeValue(forKey: path)
+        cacheVerificationIDs.removeValue(forKey: path)
+        batch.clean.removeValue(forKey: path)
+        guard line.hasSuffix(" OK"), !OutputParser.isIncomplete(line), let original else { return }
+        batch.clean[path] = original
+        cacheVerificationIDs[path] = batch.id
     }
 
     private func refreshSignatureSnapshot() {
