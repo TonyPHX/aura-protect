@@ -44,18 +44,35 @@ struct RecoveryView: View {
 
 struct HistoryView: View {
     @Environment(ScanController.self) private var controller
+    @State private var confirmClearHistory = false
+
     var body: some View {
+        @Bindable var controller = controller
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Scan History").font(.largeTitle.bold())
-                Text("The most recent 100 completed scans are stored privately on this Mac. Throughput includes scan work; comparisons depend on file mix, mode, and definitions.")
+                HStack {
+                    Text("Scan History").font(.largeTitle.bold())
+                    Spacer()
+                    Button("Clear All History…") { confirmClearHistory = true }
+                        .disabled(controller.history.isEmpty && controller.historyError == nil)
+                }
+                Toggle("Save scan history", isOn: $controller.settings.saveScanHistory)
+                Text("Keep up to 100 scan results on this Mac. Turning off saving keeps your existing history until you clear it.")
                     .foregroundStyle(.secondary)
-                if controller.history.isEmpty { Text("Completed scans will appear here.") }
+                if let error = controller.historyError {
+                    Text(error).foregroundStyle(.red)
+                } else if controller.history.isEmpty {
+                    Text(controller.settings.saveScanHistory ? "No saved scans yet." : "Scan history is off.")
+                        .foregroundStyle(.secondary)
+                }
                 ForEach(controller.history) { item in
                     GroupBox {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item.target).font(.headline).textSelection(.enabled)
                             Text(item.date.formatted()).foregroundStyle(.secondary)
+                            if let outcome = item.outcome {
+                                Text(outcome).font(.subheadline.weight(.medium))
+                            }
                             Text("Scanned: \(item.scanned) • Reused: \(item.reused) • Skipped: \(item.skipped) • Incomplete: \(item.incomplete)")
                             Text("\(item.mode.rawValue) • \(item.workers) worker(s) • \(String(format: "%.1f", item.duration)) seconds • \(item.engine)")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -79,6 +96,11 @@ struct HistoryView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog("Clear all scan history?", isPresented: $confirmClearHistory, titleVisibility: .visible) {
+            Button("Clear All History", role: .destructive) { controller.clearScanHistory() }
+        } message: {
+            Text("This permanently deletes the saved scan results on this Mac.")
         }
     }
 }

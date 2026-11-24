@@ -50,20 +50,6 @@ private struct LicensesView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var flagReveal: Double {
-        if controller.hasUnlockedCompletionFlag { return 1 }
-        switch controller.state {
-        case .counting, .scanning:
-            let completed = Double(controller.processedFiles)
-            let discoveryReveal = 0.1 + 0.25 * completed / (completed + 500)
-            return max(discoveryReveal, min(controller.scanFraction, 0.98))
-        case .finished, .finishedWithIssues:
-            return 1
-        case .idle, .cancelling, .failed:
-            return 0
-        }
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -116,25 +102,21 @@ private struct LicensesView: View {
                         Button("Show bundled license notices") { revealLicenseFolder() }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
-                if flagReveal > 0 {
-                    ScanCompletionFlag(reveal: flagReveal)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 28)
-                        .overlay {
-                            if !reduceMotion, let start = controller.flagFireworksStartedAt {
-                                FlagFireworks(start: start)
-                                    .allowsHitTesting(false)
-                                    .accessibilityHidden(true)
-                            }
+                ScanCompletionFlag()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 28)
+                    .overlay {
+                        if !reduceMotion, let start = controller.flagFireworksStartedAt {
+                            FlagFireworks(start: start)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
                         }
-                        .task(id: controller.hasUnlockedCompletionFlag && !reduceMotion) {
-                            guard controller.hasUnlockedCompletionFlag, !reduceMotion,
-                                  controller.flagFireworksStartedAt == nil else { return }
-                            do { try await Task.sleep(for: .milliseconds(650)) }
-                            catch { return }
-                            controller.flagFireworksStartedAt = .now
-                        }
-                }
+                    }
+                    .task(id: controller.hasUnlockedCompletionFlag && !reduceMotion) {
+                        guard controller.hasUnlockedCompletionFlag, !reduceMotion,
+                              controller.flagFireworksStartedAt == nil else { return }
+                        controller.flagFireworksStartedAt = .now
+                    }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

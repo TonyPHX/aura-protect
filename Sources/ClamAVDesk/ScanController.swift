@@ -60,6 +60,7 @@ final class ScanController {
     var incompletePaths: Set<String> = []
     var incompleteReasons: [String: String] = [:]
     var history: [ScanHistoryEntry] = []
+    var historyError: String?
     var quarantineRecords: [QuarantineRecord] = []
     var recoveryStatus = ""
     var backgroundStatus = "Background scans are off."
@@ -1158,6 +1159,8 @@ final class ScanController {
     }
 
     private func fail(_ message: String) {
+        let scanStarted = state == .counting || state == .scanning
+        if scanStarted { refreshTiming() }
         for worker in scanTelemetry.workers where worker.exitCode == nil { scanTelemetry.finishWorker(worker.id, code: 2) }
         scanTelemetry.latestPathIsCurrent = false
         timer?.invalidate(); timer = nil
@@ -1167,6 +1170,13 @@ final class ScanController {
         scanFileListURLs.forEach { try? FileManager.default.removeItem(at: $0) }
         scanFileListURLs = []
         state = .failed; log = message
+        if scanStarted {
+            scanCompletedAt = .now
+            summary = .init(scannedFiles: processedFiles, infectedFiles: detections.count,
+                            errors: max(scanErrorCount, 1), skippedFiles: skippedFileCount,
+                            incompleteFiles: incompletePaths.count, reusedFiles: reusedFileCount, duration: elapsed)
+            if recordsHistory { saveScanHistory() }
+        }
     }
 
     private func stopWarmDaemon() {
