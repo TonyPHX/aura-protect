@@ -54,6 +54,9 @@ struct ScannerStatusView: View {
                 .font(.callout.weight(.medium))
                 .foregroundStyle(readiness.color)
         }
+        .onChange(of: controller.isBusy) { wasBusy, isBusy in
+            if !wasBusy && isBusy { expanded = false }
+        }
         .consolePanel()
     }
 
