@@ -1,3 +1,13 @@
+# Aura Protect 1.2.8 release verification
+
+[GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.8).
+
+- Tag v1.2.8 points to source commit `ca077df`.
+- The extracted universal app reports version 1.2.8, contains both Mac architectures, and passed deep, strict signature verification. The bundled engine reports ClamAV 1.5.5.
+- The uploaded ZIP SHA-256 matches `14c21ba938cf7904fb6fb957c9e259fa20751d610f1883700a400bc99e9487a0`.
+- Eighteen tests passed. The parallel daemon test was skipped because the environment blocks its Unix socket. Full-disk performance was not benchmarked.
+- Wiki commit `3a5d8e9` documents discovery, timing, and the reuse default.
+
 # Aura Protect 1.2.7 release verification
 
 [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.7).
