@@ -2,10 +2,10 @@
 
 [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.7).
 
-- Tag v1.2.7 points to source commit .
-- The universal macOS ZIP passed extraction, version, and deep signature checks. GitHub reports the matching SHA-256 . The bundled ClamAV reports 1.5.5.
+- Tag v1.2.7 points to source commit `fe1a85d`.
+- The universal macOS ZIP passed extraction, version, and deep signature checks. GitHub reports the matching SHA-256 `db2655a9a69e288841a72f325462a105c78c69aa08ca5321e69edb785aac7fd3`. The bundled ClamAV reports 1.5.5.
 - Sixteen tests passed. The daemon integration test was excluded because the environment blocks its Unix socket.
-- Wiki commit  documents the unified Scan page, Entire Disk preset, and About & Licenses version display.
+- Wiki commit `0748e80` documents the unified Scan page, Entire Disk preset, and About & Licenses version display.
 
 # Aura Protect 1.2.6 release verification
 
