@@ -1,3 +1,12 @@
+# Aura Protect 1.2.13 release verification
+
+[GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.13) · [Wiki release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes).
+
+- Tag v1.2.13 points to source commit `3f55980614749718bcab3bb1ca914b19a15413dd` from PR #14.
+- The extracted app reports 1.2.13, includes arm64 and x86_64, and passed deep strict signature verification.
+- GitHub reports the matching ZIP SHA-256 `382f506d2e3b67409ed11730006dae0e41acfd4cf23d49b46a7806c4e04a8415`. The companion checksum file is published.
+- A focused simulation verified stall capture, crash report matching, normal quit, and diagnostic file permissions. The parallel ClamAV integration test could not start its daemon in the test environment.
+
 # Aura Protect 1.2.12 release verification
 
 [GitHub release](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.12) · [Wiki release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes).
