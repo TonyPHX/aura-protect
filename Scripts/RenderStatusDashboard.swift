@@ -7,12 +7,12 @@ import SwiftUI
 struct RenderStatusDashboard {
     @MainActor static func main() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "/private/tmp/aura-status-previews")
+        let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "/private/tmp/aura-scan-previews")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         for (name, width, height, active, partial) in [
-            ("status-live-wide", 1040.0, 1400.0, true, false),
-            ("status-live-compact", 620.0, 1750.0, true, true),
-            ("status-idle", 1040.0, 1400.0, false, true)
+            ("scan-live-wide", 1040.0, 1400.0, true, false),
+            ("scan-live-compact", 620.0, 1750.0, true, true),
+            ("scan-idle", 1040.0, 1400.0, false, true)
         ] {
             let controller = ScanController(startServices: false, recordsHistory: false)
             controller.engineUsable = true
@@ -45,7 +45,7 @@ struct RenderStatusDashboard {
                 Text("INTERFACE PREVIEW · ILLUSTRATIVE READINGS")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).padding(8)
                     .frame(maxWidth: .infinity).background(Color.black)
-                StatusDashboardView().environment(controller)
+                ScanConsoleView(onShowResults: {}).environment(controller)
             }.frame(width: width, height: height)
             let hosting = NSHostingView(rootView: root)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)

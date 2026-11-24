@@ -77,7 +77,8 @@ final class ScanController {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [("Downloads", home.appendingPathComponent("Downloads")),
                 ("Desktop", home.appendingPathComponent("Desktop")),
-                ("Applications", URL(fileURLWithPath: "/Applications"))]
+                ("Applications", URL(fileURLWithPath: "/Applications")),
+                ("Entire Disk", URL(fileURLWithPath: "/", isDirectory: true))]
     }
     private var skippedFileCount = 0
 
@@ -211,7 +212,7 @@ final class ScanController {
     func startScan() {
         guard !isBusy else { return }
         guard !isUpdating, !isUpdatingEngine, scannerReady else {
-            fail("Scanner readiness checks are incomplete. Open Status and resolve the red items before scanning.")
+            fail("The scanner is not ready. Expand the readiness row on the Scan page for details.")
             return
         }
         guard let target = selectedURL, let executable = Self.findExecutable("clamscan") else {
@@ -219,7 +220,7 @@ final class ScanController {
             return
         }
         guard Self.hasVirusDatabase else {
-            fail("Virus definitions have not been downloaded yet. Open Definitions and choose Update Now, then start the scan again.")
+            fail("Virus definitions have not been downloaded yet. Open Updates and choose Update Now, then start the scan again.")
             return
         }
         resetScan()

@@ -4,6 +4,8 @@ A fast native macOS ClamAV front end. The official universal ClamAV runtime is b
 
 The Aura Protect artwork in `Assets` is packaged as the application, Finder, and Dock icon.
 
+The macOS Scan page brings target selection, live progress, worker queues, throughput, and scanner readiness into a single view. Expand the readiness row for engine, definitions, Full Disk Access, and worker checks.
+
 ## Download and user guide
 
 - [Latest Mac release](https://github.com/TonyPHX/aura-protect/releases/latest)
@@ -33,6 +35,12 @@ Aura Protect is powered by [ClamAV](https://www.clamav.net), which is maintained
 
 Aura Protect is an independent community project and is not affiliated with, sponsored by, or endorsed by Cisco Systems or the ClamAV project. Product names and trademarks belong to their respective owners.
 
+## Aura Protect 1.2.7
+
+[Download 1.2.7](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.7) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
+
+Quick targets includes **Scan Entire Disk**. **About & Licenses** shows the installed app version.
+
 ## Aura Protect 1.2.6
 
 [Download 1.2.6](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.6) · [Release notes](https://github.com/TonyPHX/aura-protect/wiki/Release-Notes)
@@ -61,7 +69,7 @@ Bundles ClamAV 1.5.5, explains scan coverage gaps, and validates downloaded engi
 
 [Download 1.2.2](https://github.com/TonyPHX/aura-protect/releases/tag/v1.2.2) · [Status dashboard guide and native preview](https://github.com/TonyPHX/aura-protect/wiki/Status-Dashboard)
 
-The Status page is now a native performance cockpit with three speedometer-style instruments: recent files per second, session-average files per second with a peak-interval reading, and eligible-inventory completion. It also shows a bounded recent-minute throughput trace, file activity, elapsed/estimated remaining time, result counts, scan-client availability, and engine/definition/access controls.
+This release introduced the Status page as a native performance cockpit with three speedometer-style instruments: recent files per second, session-average files per second with a peak-interval reading, and eligible-inventory completion. It also shows a bounded recent-minute throughput trace, file activity, elapsed/estimated remaining time, result counts, scan-client availability, and engine/definition/access controls.
 
 Rates come from observed file completions and monotonic elapsed intervals. The two speed dials share a visible adaptive range. Average speed covers scan-client processing through the last sample and excludes inventory/startup; peak is the highest observed interval across the session. Idle/preparation states have no invented speed, and a stopped scan is labeled. Retained last-session measurements stay distinct from live telemetry. Active clients do not imply CPU utilization.
 

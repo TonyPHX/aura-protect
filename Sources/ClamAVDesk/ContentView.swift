@@ -4,12 +4,11 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(ScanController.self) private var controller
-    @State private var tab = 0
+    @State private var tab = 1
 
     var body: some View {
         NavigationSplitView {
             List(selection: $tab) {
-                Label("Status", systemImage: "checkmark.shield").tag(0)
                 Label("Scan", systemImage: "shield.checkered").tag(1)
                 Label("Results", systemImage: "doc.text.magnifyingglass").tag(2)
                 Label("Updates", systemImage: "arrow.triangle.2.circlepath").tag(3)
@@ -21,18 +20,17 @@ struct ContentView: View {
         } detail: {
             Group {
                 switch tab {
-                case 1: ScanConsoleView(onShowResults: { tab = 2 })
                 case 2: ResultsView()
                 case 3: DefinitionsView()
                 case 4: LicensesView()
                 case 5: RecoveryView()
                 case 6: HistoryView()
-                default: StatusDashboardView(onScan: { tab = 1 }, onUpdates: { tab = 3 }, onResults: { tab = 2 })
+                default: ScanConsoleView(onShowResults: { tab = 2 })
                 }
             }
-            .padding(tab == 0 || tab == 1 ? 0 : 28)
+            .padding(tab == 1 ? 0 : 28)
         }
-        .preferredColorScheme(tab == 0 || tab == 1 ? .dark : nil)
+        .preferredColorScheme(tab == 1 ? .dark : nil)
         .onChange(of: controller.scanRequestID) { _, _ in tab = 1 }
         .onChange(of: controller.state) { _, state in
             if state.hasResults && (!controller.detections.isEmpty || !controller.incompletePaths.isEmpty || controller.summary.skippedFiles > 0) { tab = 2 }
@@ -75,6 +73,11 @@ private struct LicensesView: View {
                     }
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Aura Protect").font(.largeTitle.bold())
+                        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                            Text("Version \(version)")
+                                .font(.callout.weight(.medium))
+                                .textSelection(.enabled)
+                        }
                         Text("Open-source malware scanning for macOS")
                             .foregroundStyle(.secondary)
                     }

@@ -1,7 +1,7 @@
 import Charts
 import SwiftUI
 
-private enum ConsoleStyle {
+enum ConsoleStyle {
     static let background = Color(red: 0.035, green: 0.055, blue: 0.075)
     static let panel = Color(red: 0.055, green: 0.083, blue: 0.108)
     static let cyan = Color(red: 0.20, green: 0.83, blue: 0.95)
@@ -24,7 +24,7 @@ struct ScanConsoleView: View {
         if controller.state == .counting { return "Preparing inventory" }
         if controller.state == .cancelling { return "Stopping scan" }
         if controller.state == .scanning { return "Scanning \(URL(fileURLWithPath: controller.scanHistoryTarget).lastPathComponent)" }
-        return controller.scanWasCancelled ? "Scan stopped" : controller.state.hasResults ? "Scan results ready" : "Ready to explore"
+        return controller.scanWasCancelled ? "Scan stopped" : controller.state.hasResults ? "Scan results ready" : "Scan"
     }
     private var status: String {
         if controller.state == .counting { return "Building the file inventory. Progress appears when the total is known." }
@@ -40,6 +40,8 @@ struct ScanConsoleView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     consoleRail
                     header
+                    if !controller.isBusy { controls }
+                    ScannerStatusView(wide: geometry.size.width >= 600)
                     if geometry.size.width >= 760 {
                         HStack(alignment: .center, spacing: 26) {
                             progressInstrument.frame(width: 270)
@@ -58,21 +60,13 @@ struct ScanConsoleView: View {
                         if !controller.scanTelemetry.workers.isEmpty { workersPanel }
                         resultCounters
                     }
-                    filePanel
-                    if !controller.isBusy { controls }
+                    if controller.isBusy || hasSession { filePanel }
                     if controller.state == .failed {
                         Label(controller.log, systemImage: "exclamationmark.triangle")
                             .font(.callout).foregroundStyle(ConsoleStyle.amber).lineLimit(5).consolePanel()
                     }
                     Text(controller.backgroundStatus)
                         .font(.caption).foregroundStyle(ConsoleStyle.muted)
-                    if !controller.scannerReady && !controller.isBusy {
-                        Label("A working engine and installed definitions are required. Open Status or Updates for details.", systemImage: "exclamationmark.triangle")
-                            .font(.caption).foregroundStyle(ConsoleStyle.amber)
-                    } else if !controller.hasFullDiskAccess {
-                        Label("Readable files can be scanned. Protected locations may be skipped until Full Disk Access is enabled.", systemImage: "lock")
-                            .font(.caption).foregroundStyle(ConsoleStyle.muted)
-                    }
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -81,8 +75,6 @@ struct ScanConsoleView: View {
             .background(ConsoleStyle.background)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack {
-                    Text(controller.isBusy ? "Results update as files complete." : "Local scanning · user-controlled remediation")
-                        .font(.caption).foregroundStyle(ConsoleStyle.muted)
                     Spacer(minLength: 12)
                     if controller.state.hasResults, let onShowResults {
                         Button("View Results", action: onShowResults)
@@ -182,13 +174,16 @@ struct ScanConsoleView: View {
 
     private var telemetryPanel: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                instrument(controller.state == .scanning ? "FILES / SEC" : "LAST RATE", value: controller.scanTelemetry.currentRate.map { Int($0.rounded()).formatted() } ?? "—")
-                Divider().overlay(ConsoleStyle.border)
-                instrument("ELAPSED", value: duration(controller.elapsed))
-                Divider().overlay(ConsoleStyle.border)
-                instrument("ABOUT REMAINING", value: (controller.state == .scanning ? controller.estimatedRemaining : nil).map(duration) ?? "—")
-            }.frame(height: 66)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 12)], alignment: .leading, spacing: 12) {
+                instrument(controller.state == .scanning ? "Live rate (files/s)" : "Last rate (files/s)",
+                           value: rate(controller.scanTelemetry.currentRate))
+                instrument("Average (files/s)", value: rate(controller.scanTelemetry.averageRate))
+                    .help("Average since scan-client dispatch, excluding scanner startup.")
+                instrument("Peak (files/s)", value: rate(controller.scanTelemetry.peakRate))
+                    .help("Highest measured interval in this scan.")
+                instrument("Elapsed", value: hasSession ? duration(controller.elapsed) : "—")
+                instrument("Est. remaining", value: (controller.state == .scanning ? controller.estimatedRemaining : nil).map(duration) ?? "—")
+            }
             ThroughputChart(samples: controller.scanTelemetry.samples)
         }.consolePanel()
     }
@@ -276,7 +271,7 @@ struct ScanConsoleView: View {
                     .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                     .help(controller.scanTelemetry.latestPath ?? "Waiting for scanner output")
             }
-            Text(controller.isBusy ? controller.scanHistoryTarget : controller.selectedURL?.path ?? "Choose a scan target")
+            Text(controller.scanHistoryTarget)
                 .font(.caption2).foregroundStyle(ConsoleStyle.muted).lineLimit(1).truncationMode(.middle)
         }.frame(maxWidth: .infinity, alignment: .leading).consolePanel()
     }
@@ -287,10 +282,9 @@ struct ScanConsoleView: View {
                 HStack { targetPresets; Spacer(); SettingsLink { Label("Scan Settings", systemImage: "gearshape") } }
                 VStack(alignment: .leading, spacing: 12) { targetPresets; SettingsLink { Label("Scan Settings", systemImage: "gearshape") } }
             }
-            HStack {
-                Text(controller.clamVersion).lineLimit(1).truncationMode(.tail)
-                Spacer()
-            }.font(.caption).foregroundStyle(ConsoleStyle.muted)
+            Text(controller.selectedURL?.path ?? "Choose a scan target")
+                .font(.caption).foregroundStyle(ConsoleStyle.muted).lineLimit(1).truncationMode(.middle)
+                .help(controller.selectedURL?.path ?? "Choose a file or folder to scan.")
         }
     }
 
@@ -323,6 +317,11 @@ struct ScanConsoleView: View {
         Text(text).font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(1.7).foregroundStyle(ConsoleStyle.blue)
     }
     private func workerColor(_ index: Int) -> Color { [ConsoleStyle.cyan, ConsoleStyle.blue, ConsoleStyle.violet][index % 3] }
+    private func rate(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "—" }
+        return value.formatted(.number.precision(.fractionLength(value < 10 ? 1 : 0)))
+    }
+
     private func duration(_ seconds: TimeInterval) -> String {
         let value = max(Int(seconds.rounded()), 0)
         return value >= 3600 ? String(format: "%d:%02d:%02d", value / 3600, value / 60 % 60, value % 60) : String(format: "%02d:%02d", value / 60, value % 60)
@@ -395,7 +394,7 @@ private struct ThroughputChart: View {
     }
 }
 
-private extension View {
+extension View {
     func consolePanel() -> some View {
         padding(16)
             .background(RoundedRectangle(cornerRadius: 12).fill(ConsoleStyle.panel))
