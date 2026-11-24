@@ -65,6 +65,52 @@ struct EngineIntegrationTests {
         #expect(try String(contentsOf: log, encoding: .utf8).contains("second.txt: OK"))
     }
 
+    @Test func pausedPipeSpoolsMoreThanItsCapacityAndResumesInOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let list = root.appendingPathComponent("scan-input")
+        try #require(mkfifo(list.path, 0o600) == 0)
+        let destination = root.appendingPathComponent("received")
+        try Data().write(to: destination)
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/cat")
+        process.arguments = [list.path]
+        process.standardOutput = output
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+
+        let first = Data("before pause\n".utf8)
+        let paused = Data((0..<24_000).map { "discovered-\($0)\n" }.joined().utf8)
+        let last = Data("after resume\n".utf8)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let pipe = ScanInputPipe(url: list)
+                try pipe.openWriter()
+                try pipe.writePaths(first)
+                try pipe.submitPaths(paused, shouldPause: { true })
+                #expect(pipe.hasBacklog)
+                #expect(try Data(contentsOf: destination).count <= first.count)
+                #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 2)
+                try pipe.submitPaths(last, shouldPause: { false })
+                #expect(!pipe.hasBacklog)
+                pipe.closeWriter()
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw POSIXError(.ETIMEDOUT)
+            }
+            defer { group.cancelAll() }
+            try await group.next()
+        }
+        for _ in 0..<100 where process.isRunning { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(!process.isRunning)
+        #expect(process.terminationStatus == 0)
+        #expect(try Data(contentsOf: destination) == first + paused + last)
+    }
+
     @Test func candidateEngineChecksCleanAndDetectedFilesWithLocalDatabase() throws {
         let database = FileManager.default.temporaryDirectory.appendingPathComponent("AuraEngineDatabase-\(UUID())")
         try FileManager.default.createDirectory(at: database, withIntermediateDirectories: false)
