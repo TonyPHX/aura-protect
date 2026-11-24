@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 @MainActor
@@ -16,23 +17,69 @@ final class FinderScanService: NSObject {
 extension ScanController {
     static var historyURL: URL { databaseDirectory.deletingLastPathComponent().appendingPathComponent("scan-history.json") }
 
+    private func readScanHistory() throws -> [ScanHistoryEntry] {
+        do {
+            return try JSONDecoder().decode([ScanHistoryEntry].self, from: Data(contentsOf: Self.historyURL))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return []
+        }
+    }
+
     func loadScanHistory() {
-        history = (try? JSONDecoder().decode([ScanHistoryEntry].self, from: Data(contentsOf: Self.historyURL))) ?? []
+        do {
+            history = try readScanHistory()
+            historyError = nil
+        } catch {
+            historyError = "Could not load scan history: \(error.localizedDescription)"
+        }
+    }
+
+    func clearScanHistory() {
+        do {
+            try FileManager.default.removeItem(at: Self.historyURL)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // An absent history file is already cleared.
+        } catch {
+            historyError = "Could not clear scan history: \(error.localizedDescription)"
+            return
+        }
+        history = []
+        historyError = nil
     }
 
     func saveScanHistory() {
-        history.insert(.init(id: UUID(), date: .now, target: scanHistoryTarget, scanned: summary.scannedFiles,
-                             reused: summary.reusedFiles, skipped: summary.skippedFiles,
-                             incomplete: summary.incompleteFiles, detections: detections,
-                             duration: summary.duration, mode: scanMode, workers: scanWorkers, engine: clamVersion, detectionDetails: detectionNames,
-                             preparationDuration: summary.preparationDuration, startupDuration: summary.startupDuration,
-                             matchingDuration: summary.matchingDuration, inputDeliveryDuration: summary.inputDeliveryDuration,
-                             firstResultDuration: summary.firstResultDuration), at: 0)
-        history = Array(history.prefix(100))
+        guard settings.saveScanHistory, let scanCompletedAt else { return }
+        let entry = ScanHistoryEntry(id: UUID(), date: scanCompletedAt, target: scanHistoryTarget,
+                                     scanned: summary.scannedFiles, reused: summary.reusedFiles, skipped: summary.skippedFiles,
+                                     incomplete: summary.incompleteFiles, detections: detections,
+                                     duration: summary.duration, mode: scanMode, workers: scanWorkers, engine: clamVersion,
+                                     detectionDetails: detectionNames, outcome: state.label,
+                                     preparationDuration: summary.preparationDuration, startupDuration: summary.startupDuration,
+                                     matchingDuration: summary.matchingDuration, inputDeliveryDuration: summary.inputDeliveryDuration,
+                                     firstResultDuration: summary.firstResultDuration)
+        let manager = FileManager.default
+        let url = Self.historyURL
+        let directory = url.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent(".scan-history-\(UUID().uuidString).tmp")
         do {
-            try JSONEncoder().encode(history).write(to: Self.historyURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.historyURL.path)
-        } catch { backgroundStatus = "Scan finished; history could not be saved: \(error.localizedDescription)" }
+            let saved = try readScanHistory()
+            let updated = [entry] + saved.prefix(99)
+            let data = try JSONEncoder().encode(updated)
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+            defer { try? manager.removeItem(at: temporary) }
+            guard manager.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            // Replace the old file only after the new one has been written with private permissions.
+            guard rename(temporary.path, url.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            history = updated
+            historyError = nil
+        } catch {
+            historyError = "Could not save scan history: \(error.localizedDescription)"
+        }
     }
 
     func refreshQuarantine() {

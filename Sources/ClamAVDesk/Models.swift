@@ -46,6 +46,7 @@ struct ScanSettings: Codable, Equatable, Sendable {
     var parallelScanning = true
     var automaticWorkerTuning = true
     var incrementalScanning = true
+    var saveScanHistory = true
     var workerCount = min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
     var recursive = true
     var scanArchives = true
@@ -67,6 +68,7 @@ struct ScanSettings: Codable, Equatable, Sendable {
         parallelScanning = try values.decodeIfPresent(Bool.self, forKey: .parallelScanning) ?? true
         automaticWorkerTuning = try values.decodeIfPresent(Bool.self, forKey: .automaticWorkerTuning) ?? true
         incrementalScanning = try values.decodeIfPresent(Bool.self, forKey: .incrementalScanning) ?? true
+        saveScanHistory = try values.decodeIfPresent(Bool.self, forKey: .saveScanHistory) ?? true
         workerCount = try values.decodeIfPresent(Int.self, forKey: .workerCount) ?? min(max(ProcessInfo.processInfo.activeProcessorCount / 2, 2), 8)
         recursive = try values.decodeIfPresent(Bool.self, forKey: .recursive) ?? true
         scanArchives = try values.decodeIfPresent(Bool.self, forKey: .scanArchives) ?? true
@@ -151,6 +153,7 @@ struct ScanHistoryEntry: Codable, Identifiable {
     let workers: Int
     let engine: String
     var detectionDetails: [String: String]? = nil
+    var outcome: String? = nil
     var preparationDuration: TimeInterval? = nil
     var startupDuration: TimeInterval? = nil
     var matchingDuration: TimeInterval? = nil

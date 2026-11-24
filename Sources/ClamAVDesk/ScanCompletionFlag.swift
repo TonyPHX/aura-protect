@@ -1,9 +1,6 @@
 import SwiftUI
 
 struct ScanCompletionFlag: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let reveal: Double
-
     var body: some View {
         Canvas { context, size in
             let stripe = size.height / 13
@@ -43,43 +40,7 @@ struct ScanCompletionFlag: View {
         .frame(maxWidth: 290)
         .clipShape(.rect(cornerRadius: 10))
         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.2)) }
-        .modifier(FlagMaterialization(progress: reveal, showShimmer: !reduceMotion))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.65), value: reveal)
         .accessibilityLabel("Stylized American flag")
-    }
-}
-
-private struct FlagMaterialization: AnimatableModifier {
-    var progress: Double
-    let showShimmer: Bool
-
-    nonisolated var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(progress)
-            .overlay {
-                if showShimmer && progress > 0 && progress < 1 {
-                    Canvas { context, size in
-                        let strength = sin(progress * .pi) * 0.65
-                        for spark in 0..<56 {
-                            let x = Double((spark * 73 + 19) % 101) / 101 * size.width
-                            let offset = Double((spark * 37 + 11) % 101) / 101
-                            let y = (offset + progress * 0.18).truncatingRemainder(dividingBy: 1) * size.height
-                            let length = CGFloat(2 + spark % 5)
-                            let rect = CGRect(x: x, y: y, width: 1.4, height: length)
-                            let tint: Color = spark.isMultiple(of: 3) ? .cyan : .white
-                            context.fill(Path(roundedRect: rect, cornerRadius: 0.7),
-                                         with: .color(tint.opacity(strength)))
-                        }
-                    }
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                }
-            }
     }
 }
 
