@@ -156,12 +156,22 @@ struct ScanPerformanceTests {
         #expect(original != replaced)
     }
 
+    @Test func scanHistoryDefaultsOnAndSavesOptOut() throws {
+        let decoder = JSONDecoder()
+        var settings = try decoder.decode(ScanSettings.self, from: Data("{}".utf8))
+        #expect(settings.saveScanHistory)
+        settings.saveScanHistory = false
+        let data = try JSONEncoder().encode(settings)
+        #expect(try !decoder.decode(ScanSettings.self, from: data).saveScanHistory)
+    }
+
     @Test func oldHistoryDecodesWithoutPhaseTimings() throws {
         let entry = ScanHistoryEntry(id: UUID(), date: .now, target: "/fixture", scanned: 1, reused: 0,
                                      skipped: 0, incomplete: 0, detections: [], duration: 2, mode: .balanced,
                                      workers: 1, engine: "ClamAV 1.5.4")
         let decoded = try JSONDecoder().decode(ScanHistoryEntry.self, from: JSONEncoder().encode(entry))
         #expect(decoded.preparationDuration == nil)
+        #expect(decoded.outcome == nil)
         #expect(decoded.duration == 2)
     }
 }
